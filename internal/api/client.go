@@ -217,6 +217,18 @@ func (c *Client) FinishTask(taskID, token string, privKey ed25519.PrivateKey, ex
 	})
 }
 
+// SendLog appends a captured log chunk for a task. Chunks are keyed by a
+// per-task monotonic seq; the server dedups on (task, seq), so resending a seq
+// is idempotent.
+func (c *Client) SendLog(taskID, token string, privKey ed25519.PrivateKey, seq int, chunk string) error {
+	return c.postSigned(c.ServerURL+"/api/tasks/"+taskID+"/logs", token, privKey, map[string]any{
+		"seq":       seq,
+		"chunk":     chunk,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"nonce":     newNonce(),
+	})
+}
+
 func (c *Client) postSigned(url, token string, privKey ed25519.PrivateKey, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -238,7 +250,7 @@ func (c *Client) postSigned(url, token string, privKey ed25519.PrivateKey, paylo
 	defer resp.Body.Close()
 
 	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("request rejected (%s): %s", resp.Status, serverError(data))
 	}
 	return nil

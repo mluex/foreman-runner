@@ -10,12 +10,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/mluex/foreman-runner/internal/agent"
 	"github.com/mluex/foreman-runner/internal/api"
 	"github.com/mluex/foreman-runner/internal/config"
+	"github.com/mluex/foreman-runner/internal/logstream"
 	"github.com/mluex/foreman-runner/internal/session"
 	"github.com/mluex/foreman-runner/internal/system"
 )
@@ -175,11 +177,26 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 
 	fmt.Printf("running %s (session %s)\n", task.TaskID, res.Name)
 
+	stopLogs := make(chan struct{})
+	var logsDone sync.WaitGroup
+	logsDone.Add(1)
+	go func() {
+		defer logsDone.Done()
+		logstream.Stream(res.LogFile, 2*time.Second, func(seq int, chunk string) error {
+			return client.SendLog(task.TaskID, cfg.APIToken, privKey, seq, chunk)
+		}, stopLogs)
+	}()
+
 	code, err := session.WaitExit(res.Name, exitFile, time.Second)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "wait error:", err)
 		code = 1
 	}
+
+	// stop tailing and let the final flush finish before reporting completion,
+	// so a finished task has all of its logs persisted server-side
+	close(stopLogs)
+	logsDone.Wait()
 
 	finish(client, cfg, privKey, task.TaskID, code)
 	fmt.Printf("finished %s exit=%d\n", task.TaskID, code)

@@ -86,6 +86,6 @@ func cmdEnroll(args []string) error {
 	fmt.Printf("host      %s (%s/%s)\n", hostname, goos, arch)
 	fmt.Printf("server    %s\n", cfg.ServerURL)
 	fmt.Printf("config    %s\n", *configPath)
-	fmt.Printf("\nthis machine is now registered. heartbeat and task polling arrive in a later milestone.\n")
+	fmt.Printf("\nthis machine is now registered. start the daemon with \"foreman-runner run\".\n")
 	return nil
 }
