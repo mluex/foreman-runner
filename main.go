@@ -33,6 +33,8 @@ func main() {
 		err = cmdRun(os.Args[2:])
 	case "spawn":
 		err = cmdSpawn(os.Args[2:])
+	case "install":
+		err = cmdInstall(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Println(version)
 		return
@@ -60,6 +62,7 @@ usage:
 commands:
   enroll   register this machine with a foreman server
   run      heartbeat daemon: report agents and host metrics to the server
+  install  install the runner as a background service (systemd/launchd)
   spawn    launch a coding agent in a tmux session (proof of concept)
   version  print the runner version
 

@@ -20,6 +20,7 @@ import (
 	"github.com/mluex/foreman-runner/internal/logstream"
 	"github.com/mluex/foreman-runner/internal/session"
 	"github.com/mluex/foreman-runner/internal/system"
+	"github.com/mluex/foreman-runner/internal/trust"
 )
 
 // cmdRun is the runner daemon: it loads the enrolled config, sends signed
@@ -60,6 +61,16 @@ func cmdRun(args []string) error {
 		if dir, err = os.Getwd(); err != nil {
 			return fmt.Errorf("resolve working directory: %w", err)
 		}
+	}
+	if dir, err = filepath.Abs(dir); err != nil {
+		return fmt.Errorf("resolve working directory: %w", err)
+	}
+
+	// Pre-accept Claude Code's per-directory workspace trust dialog for the
+	// working directory. Without this an unattended task launch stalls on the
+	// "Is this a project you trust?" prompt.
+	if _, err := trust.Seed(trust.DefaultConfigPath(), dir); err != nil {
+		fmt.Fprintln(os.Stderr, "warn: could not pre-seed workspace trust:", err)
 	}
 
 	client := api.New(cfg.ServerURL, *insecure)

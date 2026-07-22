@@ -19,16 +19,20 @@ fails loudly if either is missing.
 
 ## Quickstart
 
-Enroll the machine with a code from the foreman web UI, then start the daemon:
+Enroll the machine with a code from the foreman web UI, then install it as a
+background service (or run it in the foreground):
 
 ```sh
 ./foreman-runner enroll --code=ABCD-EFGH-IJ --server=https://foreman.example.com
-./foreman-runner run --dir /path/to/workspace
+./foreman-runner install        # background service, starts on boot
+# or, in the foreground:
+./foreman-runner run
 ```
 
 `enroll` generates an Ed25519 keypair, exchanges the code for an API token, and
-writes `~/.config/foreman/runner.json` (mode 0600). `run` then heartbeats and
-polls for work.
+writes `~/.config/foreman/runner.json` (mode 0600). `install` copies the binary
+to `~/.local/bin` and writes the service file, then prints the command to enable
+it. `run` heartbeats and polls for work.
 
 ## Commands
 
@@ -60,6 +64,14 @@ The daemon. Sends a signed heartbeat every `--interval`, polls
 | `--once`          | `false`   | Send a single heartbeat and exit               |
 | `--insecure`      | `false`   | Skip TLS verification (self-signed dev only)   |
 | `--config`        | XDG path  | Config file location                           |
+
+### `install`
+
+Installs the runner as a background service that starts on boot: a systemd user
+unit (`~/.config/systemd/user/foreman-runner.service`) on Linux, a LaunchAgent
+(`~/Library/LaunchAgents/net.mluex.foreman-runner.plist`) on macOS. It copies the
+binary to `~/.local/bin/foreman-runner`, writes the service file, and prints the
+command to enable it — it does not enable it for you.
 
 ### `spawn`
 
