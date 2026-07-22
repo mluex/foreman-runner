@@ -7,7 +7,8 @@
 // Subcommands:
 //
 //	enroll   register this machine with a foreman server
-//	run      launch a coding agent in a tmux session (proof of concept)
+//	run      heartbeat daemon: report agents and host metrics to the server
+//	spawn    launch a coding agent in a tmux session (proof of concept)
 package main
 
 import (
@@ -27,6 +28,8 @@ func main() {
 		err = cmdEnroll(os.Args[2:])
 	case "run":
 		err = cmdRun(os.Args[2:])
+	case "spawn":
+		err = cmdSpawn(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -50,7 +53,8 @@ usage:
 
 commands:
   enroll   register this machine with a foreman server
-  run      launch a coding agent in a tmux session (proof of concept)
+  run      heartbeat daemon: report agents and host metrics to the server
+  spawn    launch a coding agent in a tmux session (proof of concept)
 
 run "foreman-runner <command> -h" for command flags
 `)

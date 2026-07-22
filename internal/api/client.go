@@ -3,7 +3,9 @@ package api
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -75,6 +77,70 @@ func (c *Client) Enroll(req EnrollRequest) (*EnrollResponse, error) {
 	}
 
 	var out EnrollResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
+}
+
+// Agent is a coding agent the runner reports as available.
+type Agent struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Path    string `json:"path"`
+	AuthOK  bool   `json:"auth_ok"`
+}
+
+// System carries lightweight host metrics.
+type System struct {
+	Load1     float64 `json:"load1"`
+	MemFreeMB int64   `json:"mem_free_mb"`
+}
+
+// HeartbeatRequest is the body of POST /api/runners/heartbeat.
+type HeartbeatRequest struct {
+	RunnerID  string  `json:"runner_id"`
+	Timestamp string  `json:"timestamp"`
+	Nonce     string  `json:"nonce"`
+	Agents    []Agent `json:"agents"`
+	System    System  `json:"system"`
+}
+
+// HeartbeatResponse is the server's reply; UserPubKey lets the runner pick up
+// owner key rotations.
+type HeartbeatResponse struct {
+	UserPubKey string `json:"user_pubkey"`
+	ServerTime string `json:"server_time"`
+}
+
+// Heartbeat sends a signed heartbeat. The body is signed with the runner's
+// Ed25519 private key and the exact signed bytes are sent verbatim.
+func (c *Client) Heartbeat(token string, privKey ed25519.PrivateKey, req HeartbeatRequest) (*HeartbeatResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+
+	httpReq, err := http.NewRequest(http.MethodPost, c.ServerURL+"/api/runners/heartbeat", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("X-Signature", base64.StdEncoding.EncodeToString(ed25519.Sign(privKey, body)))
+
+	resp, err := c.HTTP.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("heartbeat request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("heartbeat rejected (%s): %s", resp.Status, serverError(data))
+	}
+
+	var out HeartbeatResponse
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
