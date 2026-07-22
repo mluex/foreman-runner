@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -163,6 +164,12 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 	if prompt == "" {
 		reject(client, cfg, privKey, task.TaskID, "task has no prompt")
 		return
+	}
+
+	// every task runs as a live, interactive session prefixed with
+	// /remote-control, so it is controllable from Claude Web - that is the point
+	if !strings.HasPrefix(strings.TrimSpace(prompt), "/remote-control") {
+		prompt = "/remote-control " + prompt
 	}
 
 	logDir := defaultLogDir()
