@@ -4,6 +4,7 @@ package api
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -145,6 +146,108 @@ func (c *Client) Heartbeat(token string, privKey ed25519.PrivateKey, req Heartbe
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return &out, nil
+}
+
+// NextTaskResponse is a claimed task: the exact signed payload bytes and the
+// detached signature to verify against the owner's public key.
+type NextTaskResponse struct {
+	TaskID    string `json:"task_id"`
+	Payload   string `json:"payload"`
+	Signature string `json:"signature"`
+}
+
+// TaskPayload is the parsed canonical task payload. Optional fields are empty
+// strings when the payload carried null.
+type TaskPayload struct {
+	TaskID   string `json:"task_id"`
+	RunnerID string `json:"runner_id"`
+	Agent    string `json:"agent"`
+	Model    string `json:"model"`
+	Effort   string `json:"effort"`
+	Prompt   string `json:"prompt"`
+	Title    string `json:"title"`
+}
+
+// NextTask claims the next pending task for the runner, or returns (nil, nil)
+// when the queue is empty.
+func (c *Client) NextTask(runnerID, token string) (*NextTaskResponse, error) {
+	httpReq, err := http.NewRequest(http.MethodGet, c.ServerURL+"/api/runners/"+runnerID+"/next-task", nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := c.HTTP.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("next-task request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil, nil
+	}
+
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("next-task failed (%s): %s", resp.Status, serverError(data))
+	}
+
+	var out NextTaskResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
+}
+
+// RejectTask marks a claimed task rejected (e.g. after a failed signature check).
+func (c *Client) RejectTask(taskID, token string, privKey ed25519.PrivateKey, reason string) error {
+	return c.postSigned(c.ServerURL+"/api/tasks/"+taskID+"/reject", token, privKey, map[string]any{
+		"reason":    reason,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"nonce":     newNonce(),
+	})
+}
+
+// FinishTask reports the agent's exit code for a running task.
+func (c *Client) FinishTask(taskID, token string, privKey ed25519.PrivateKey, exitCode int) error {
+	return c.postSigned(c.ServerURL+"/api/tasks/"+taskID+"/finish", token, privKey, map[string]any{
+		"exit_code": exitCode,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"nonce":     newNonce(),
+	})
+}
+
+func (c *Client) postSigned(url, token string, privKey ed25519.PrivateKey, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode request: %w", err)
+	}
+
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("X-Signature", base64.StdEncoding.EncodeToString(ed25519.Sign(privKey, body)))
+
+	resp, err := c.HTTP.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("request %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("request rejected (%s): %s", resp.Status, serverError(data))
+	}
+	return nil
+}
+
+func newNonce() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return base64.StdEncoding.EncodeToString(b)
 }
 
 // serverError extracts the "error" field from a JSON error body, falling back

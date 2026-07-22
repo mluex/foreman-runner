@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Spec describes a single agent run to launch.
@@ -17,8 +19,6 @@ type Spec struct {
 	Name string
 	// TaskID is exposed to the agent as FOREMAN_TASK_ID.
 	TaskID string
-	// ClickUpID is exposed as FOREMAN_CLICKUP_ID when set.
-	ClickUpID string
 	// Dir is the working directory the agent runs in. Must exist.
 	Dir string
 	// Prompt is the full text submitted to the agent on start.
@@ -34,6 +34,10 @@ type Spec struct {
 	ExtraArgs []string
 	// LogDir is where the piped session log is written.
 	LogDir string
+	// ExitCodeFile, when set, makes the pane run the agent non-exec and write
+	// the agent's exit code to this path when it finishes. Used by the task
+	// dispatcher to report completion; leave empty for an interactive PoC run.
+	ExitCodeFile string
 }
 
 // Result reports where a launched session lives.
@@ -83,9 +87,6 @@ func Launch(s Spec) (*Result, error) {
 		"-c", s.Dir,
 		"-e", "FOREMAN_TASK_ID=" + s.TaskID,
 	}
-	if s.ClickUpID != "" {
-		newArgs = append(newArgs, "-e", "FOREMAN_CLICKUP_ID="+s.ClickUpID)
-	}
 	if out, err := exec.Command(tmuxBin, newArgs...).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("tmux new-session failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -101,7 +102,7 @@ func Launch(s Spec) (*Result, error) {
 	// so the process tree ends at the agent, and the shell's line editor holds
 	// the keystrokes even if it is not fully ready yet.
 	agentArgs := s.agentCommand()
-	if out, err := exec.Command(tmuxBin, "send-keys", "-t", s.Name, "-l", shellCommandLine(agentArgs)).CombinedOutput(); err != nil {
+	if out, err := exec.Command(tmuxBin, "send-keys", "-t", s.Name, "-l", s.commandLine(agentArgs)).CombinedOutput(); err != nil {
 		_ = exec.Command(tmuxBin, "kill-session", "-t", s.Name).Run()
 		return nil, fmt.Errorf("tmux send-keys failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -110,7 +111,10 @@ func Launch(s Spec) (*Result, error) {
 		return nil, fmt.Errorf("tmux send-keys Enter failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	if !hasSession(tmuxBin, s.Name) {
+	// In interactive mode a session that vanished immediately means the agent
+	// failed to start. In task mode (ExitCodeFile set) the agent may legitimately
+	// finish before this check, so completion is detected via WaitExit instead.
+	if s.ExitCodeFile == "" && !hasSession(tmuxBin, s.Name) {
 		return nil, fmt.Errorf("session %q exited immediately; check that the agent is authenticated", s.Name)
 	}
 
@@ -132,14 +136,46 @@ func (s Spec) agentCommand() []string {
 	return args
 }
 
-// shellCommandLine renders argv as a single shell line that execs the agent,
-// quoting every field so the prompt survives the pane shell verbatim.
-func shellCommandLine(argv []string) string {
+// commandLine renders argv as a single shell line, quoting every field so the
+// prompt survives the pane shell verbatim. In task mode it runs non-exec and
+// appends the exit-code capture; otherwise it execs the agent so the process
+// tree ends at the agent.
+func (s Spec) commandLine(argv []string) string {
 	quoted := make([]string, len(argv))
 	for i, a := range argv {
 		quoted[i] = shellQuote(a)
 	}
-	return "exec " + strings.Join(quoted, " ")
+	joined := strings.Join(quoted, " ")
+
+	if s.ExitCodeFile != "" {
+		// capture the agent's exit code, record it, then exit the pane shell
+		// with the same code so the tmux session actually ends
+		return fmt.Sprintf("%s; _fr_ec=$?; echo $_fr_ec > %s; exit $_fr_ec", joined, shellQuote(s.ExitCodeFile))
+	}
+	return "exec " + joined
+}
+
+// WaitExit blocks until the named tmux session ends, then reads the exit code
+// the pane wrote to exitFile.
+func WaitExit(name, exitFile string, poll time.Duration) (int, error) {
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		return -1, err
+	}
+
+	for hasSession(tmuxBin, name) {
+		time.Sleep(poll)
+	}
+
+	data, err := os.ReadFile(exitFile)
+	if err != nil {
+		return -1, fmt.Errorf("read exit code: %w", err)
+	}
+	code, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return -1, fmt.Errorf("parse exit code %q: %w", strings.TrimSpace(string(data)), err)
+	}
+	return code, nil
 }
 
 func hasSession(tmuxBin, name string) bool {

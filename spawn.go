@@ -38,7 +38,6 @@ func cmdSpawn(args []string) error {
 		remoteControl = fs.Bool("remote-control", true, "prefix the prompt with /remote-control")
 		name          = fs.String("session", "", "tmux session name (empty = generated)")
 		taskID        = fs.String("task-id", "", "task id exposed as FOREMAN_TASK_ID (empty = generated)")
-		clickUpID     = fs.String("clickup-id", "", "ClickUp id exposed as FOREMAN_CLICKUP_ID")
 		skipPerms     = fs.Bool("skip-permissions", false, "launch claude with --dangerously-skip-permissions (adds its own one-time acceptance gate; auto mode is preferred for unattended runs)")
 		trustDir      = fs.Bool("trust", true, "pre-accept the workspace trust dialog for --dir in the claude config")
 		claudeConfig  = fs.String("claude-config", trust.DefaultConfigPath(), "path to the claude user config for trust seeding")
@@ -100,7 +99,6 @@ func cmdSpawn(args []string) error {
 	res, err := session.Launch(session.Spec{
 		Name:           sessName,
 		TaskID:         id,
-		ClickUpID:      *clickUpID,
 		Dir:            absDir,
 		Prompt:         finalPrompt,
 		Model:          *model,
