@@ -16,6 +16,9 @@ import (
 	"os"
 )
 
+// version is the build version, set via -ldflags at release time.
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -30,6 +33,9 @@ func main() {
 		err = cmdRun(os.Args[2:])
 	case "spawn":
 		err = cmdSpawn(os.Args[2:])
+	case "version", "-v", "--version":
+		fmt.Println(version)
+		return
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -55,6 +61,7 @@ commands:
   enroll   register this machine with a foreman server
   run      heartbeat daemon: report agents and host metrics to the server
   spawn    launch a coding agent in a tmux session (proof of concept)
+  version  print the runner version
 
 run "foreman-runner <command> -h" for command flags
 `)
