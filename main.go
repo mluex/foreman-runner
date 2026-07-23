@@ -35,6 +35,8 @@ func main() {
 		err = cmdSpawn(os.Args[2:])
 	case "install":
 		err = cmdInstall(os.Args[2:])
+	case "update":
+		err = cmdUpdate(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Println(version)
 		return
@@ -63,6 +65,7 @@ commands:
   enroll   register this machine with a foreman server
   run      heartbeat daemon: report agents and host metrics to the server
   install  install the runner as a background service (systemd/launchd)
+  update   update the runner to the latest release and restart the service
   spawn    launch a coding agent in a tmux session (proof of concept)
   version  print the runner version
 

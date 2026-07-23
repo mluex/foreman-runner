@@ -234,6 +234,59 @@ func (c *Client) TaskStatus(taskID, token string) (*TaskStatusResponse, error) {
 	return &out, nil
 }
 
+// LatestVersion returns the tag name of the latest published runner release,
+// as reported by the runner's own server.
+func (c *Client) LatestVersion(token string) (string, error) {
+	httpReq, err := http.NewRequest(http.MethodGet, c.ServerURL+"/api/runners/latest-version", nil)
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := c.HTTP.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("latest-version request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("latest-version failed (%s): %s", resp.Status, serverError(data))
+	}
+
+	var out struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	return out.Version, nil
+}
+
+// DownloadAsset streams a release asset through the server's /dl proxy, which
+// redirects to the matching asset of the latest release. The caller must close
+// the returned body. A dedicated client with a generous timeout is used so a
+// multi-megabyte binary is not cut off by the short API timeout.
+func (c *Client) DownloadAsset(asset string) (io.ReadCloser, error) {
+	httpReq, err := http.NewRequest(http.MethodGet, c.ServerURL+"/dl/"+asset, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	dl := &http.Client{Timeout: 5 * time.Minute, Transport: c.HTTP.Transport}
+	resp, err := dl.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("download %s: %w", asset, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		return nil, fmt.Errorf("download %s failed (%s): %s", asset, resp.Status, serverError(data))
+	}
+	return resp.Body, nil
+}
+
 // RejectTask marks a claimed task rejected (e.g. after a failed signature check).
 func (c *Client) RejectTask(taskID, token string, privKey ed25519.PrivateKey, reason string) error {
 	return c.postSigned(c.ServerURL+"/api/tasks/"+taskID+"/reject", token, privKey, map[string]any{
