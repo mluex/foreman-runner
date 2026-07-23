@@ -199,6 +199,41 @@ func (c *Client) NextTask(runnerID, token string) (*NextTaskResponse, error) {
 	return &out, nil
 }
 
+// TaskStatusResponse reports a task's current server-side status and whether
+// the operator has requested its cancellation.
+type TaskStatusResponse struct {
+	Status          string `json:"status"`
+	CancelRequested bool   `json:"cancel_requested"`
+}
+
+// TaskStatus fetches the current status of a task. It is a lightweight
+// bearer-authenticated poll (no signed body) the runner uses to notice a
+// cancellation requested from the web UI while a task is running.
+func (c *Client) TaskStatus(taskID, token string) (*TaskStatusResponse, error) {
+	httpReq, err := http.NewRequest(http.MethodGet, c.ServerURL+"/api/tasks/"+taskID+"/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := c.HTTP.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("task-status request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("task-status failed (%s): %s", resp.Status, serverError(data))
+	}
+
+	var out TaskStatusResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
+}
+
 // LatestVersion returns the tag name of the latest published runner release,
 // as reported by the runner's own server.
 func (c *Client) LatestVersion(token string) (string, error) {

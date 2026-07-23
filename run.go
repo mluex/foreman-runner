@@ -31,13 +31,14 @@ import (
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	var (
-		configPath   = fs.String("config", config.DefaultPath(), "path to the runner config file")
-		insecure     = fs.Bool("insecure", false, "skip TLS certificate verification (dev/self-signed only)")
-		interval     = fs.Duration("interval", 30*time.Second, "heartbeat interval")
-		pollInterval = fs.Duration("poll-interval", 5*time.Second, "task poll interval")
-		workDir      = fs.String("dir", "", "working directory agents run in (default: current directory)")
-		claudeBin    = fs.String("claude-bin", "claude", "agent binary name or path")
-		once         = fs.Bool("once", false, "send a single heartbeat and exit")
+		configPath         = fs.String("config", config.DefaultPath(), "path to the runner config file")
+		insecure           = fs.Bool("insecure", false, "skip TLS certificate verification (dev/self-signed only)")
+		interval           = fs.Duration("interval", 30*time.Second, "heartbeat interval")
+		pollInterval       = fs.Duration("poll-interval", 5*time.Second, "task poll interval")
+		cancelPollInterval = fs.Duration("cancel-poll-interval", 3*time.Second, "how often to check for a web-requested cancellation while a task runs")
+		workDir            = fs.String("dir", "", "working directory agents run in (default: current directory)")
+		claudeBin          = fs.String("claude-bin", "claude", "agent binary name or path")
+		once               = fs.Bool("once", false, "send a single heartbeat and exit")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -131,7 +132,7 @@ func cmdRun(args []string) error {
 				continue
 			}
 			if task != nil {
-				runTask(client, cfg, privKey, userPubKey, task, dir, *claudeBin)
+				runTask(client, cfg, privKey, userPubKey, task, dir, *claudeBin, *cancelPollInterval)
 			}
 		case <-stop:
 			fmt.Println("shutting down")
@@ -141,8 +142,10 @@ func cmdRun(args []string) error {
 }
 
 // runTask verifies a claimed task's signature, launches the agent, waits for it
-// to finish, and reports the exit code. An invalid signature is rejected.
-func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey, userPubKey []byte, task *api.NextTaskResponse, dir, claudeBin string) {
+// to finish, and reports the exit code. An invalid signature is rejected. While
+// the agent runs it watches for a cancellation requested from the web UI and
+// tears the session down when one arrives.
+func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey, userPubKey []byte, task *api.NextTaskResponse, dir, claudeBin string, cancelPollInterval time.Duration) {
 	fmt.Printf("claimed task %s\n", task.TaskID)
 
 	signature, err := base64.StdEncoding.DecodeString(task.Signature)
@@ -205,11 +208,16 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 		}, stopLogs)
 	}()
 
+	stopCancelWatch := make(chan struct{})
+	go watchForCancel(client, cfg, task.TaskID, res.Name, cancelPollInterval, stopCancelWatch)
+
 	code, err := session.WaitExit(res.Name, exitFile, time.Second)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "wait error:", err)
 		code = 1
 	}
+
+	close(stopCancelWatch)
 
 	// stop tailing and let the final flush finish before reporting completion,
 	// so a finished task has all of its logs persisted server-side
@@ -218,6 +226,38 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 
 	finish(client, cfg, privKey, task.TaskID, code)
 	fmt.Printf("finished %s exit=%d\n", task.TaskID, code)
+}
+
+// watchForCancel polls the server for a cancellation requested from the web UI
+// while a task runs. On the first request it gracefully shuts the session down;
+// WaitExit then observes the session ending and the task is reported finished,
+// which the server records as a cancellation. It returns when the session ends
+// (stop is closed) or once it has triggered a shutdown.
+func watchForCancel(client *api.Client, cfg *config.Config, taskID, sessionName string, interval time.Duration, stop <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			status, err := client.TaskStatus(taskID, cfg.APIToken)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "cancel-poll error:", err)
+
+				continue
+			}
+			if status.CancelRequested {
+				fmt.Printf("cancellation requested for %s; shutting the session down\n", taskID)
+				if err := session.Cancel(sessionName, 10*time.Second); err != nil {
+					fmt.Fprintln(os.Stderr, "cancel error:", err)
+				}
+
+				return
+			}
+		}
+	}
 }
 
 func reject(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey, taskID, reason string) {
@@ -232,15 +272,19 @@ func finish(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey, 
 	}
 }
 
-// mapEffort maps the task effort to a claude --permission-mode value. The exact
-// mapping is provisional (see docs/BRIEFING.md §15); unattended runs default to
-// accepting edits.
+// mapEffort maps the task effort selection (the web UI offers auto, plan, and
+// code-only) to a claude --permission-mode value. Unattended runs need a
+// non-interactive mode or the session stalls on the first permission prompt, so
+// auto is both the "auto" selection and the fallback - matching the PoC spawn
+// default that boots straight into a live session. See docs/BRIEFING.md §15.
 func mapEffort(effort string) string {
 	switch effort {
 	case "plan":
 		return "plan"
-	default:
+	case "code-only":
 		return "acceptEdits"
+	default:
+		return "auto"
 	}
 }
 

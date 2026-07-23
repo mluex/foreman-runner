@@ -55,15 +55,16 @@ config.
 The daemon. Sends a signed heartbeat every `--interval`, polls
 `--poll-interval` for a task, and runs one task at a time.
 
-| Flag              | Default   | Notes                                          |
-| ----------------- | --------- | ---------------------------------------------- |
-| `--dir`           | cwd       | Working directory agents run in                |
-| `--interval`      | `30s`     | Heartbeat interval                             |
-| `--poll-interval` | `5s`      | Task poll interval                             |
-| `--claude-bin`    | `claude`  | Agent binary name or path                      |
-| `--once`          | `false`   | Send a single heartbeat and exit               |
-| `--insecure`      | `false`   | Skip TLS verification (self-signed dev only)   |
-| `--config`        | XDG path  | Config file location                           |
+| Flag                     | Default   | Notes                                          |
+| ------------------------ | --------- | ---------------------------------------------- |
+| `--dir`                  | cwd       | Working directory agents run in                |
+| `--interval`             | `30s`     | Heartbeat interval                             |
+| `--poll-interval`        | `5s`      | Task poll interval                             |
+| `--cancel-poll-interval` | `3s`      | How often a running task checks for a web-requested cancellation |
+| `--claude-bin`           | `claude`  | Agent binary name or path                      |
+| `--once`                 | `false`   | Send a single heartbeat and exit               |
+| `--insecure`             | `false`   | Skip TLS verification (self-signed dev only)   |
+| `--config`               | XDG path  | Config file location                           |
 
 ### `install`
 
