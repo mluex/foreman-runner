@@ -73,6 +73,29 @@ unit (`~/.config/systemd/user/foreman-runner.service`) on Linux, a LaunchAgent
 binary to `~/.local/bin/foreman-runner`, writes the service file, and prints the
 command to enable it — it does not enable it for you.
 
+### `update`
+
+Updates the runner in place. It asks the server for the latest released version
+(`GET /api/runners/latest-version`), and if it differs from the running binary,
+downloads the matching binary and `SHA256SUMS` through the server's `/dl` proxy,
+verifies the SHA-256, atomically replaces the running binary, and restarts the
+background service. The runner only ever talks to its own server.
+
+```sh
+foreman-runner update
+```
+
+| Flag           | Default   | Notes                                          |
+| -------------- | --------- | ---------------------------------------------- |
+| `--force`      | `false`   | Reinstall even if already on the latest version |
+| `--no-restart` | `false`   | Replace the binary but do not restart the service |
+| `--server`     | config    | Override the server URL from the config        |
+| `--insecure`   | `false`   | Skip TLS verification (self-signed dev only)   |
+| `--config`     | XDG path  | Config file location                           |
+
+It updates the binary it runs as (`os.Executable()`), so invoke the installed
+`foreman-runner` on your `PATH` — the same binary the service runs.
+
 ### `spawn`
 
 A standalone launcher for the tmux/agent mechanism, useful for testing a machine

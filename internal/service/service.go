@@ -7,9 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
+
+// DarwinLabel is the launchd label of the runner LaunchAgent.
+const DarwinLabel = "net.mluex.foreman-runner"
 
 // Plan describes what installing the service will do on this platform.
 type Plan struct {
@@ -132,6 +137,29 @@ func DefaultHome() string {
 // CurrentGOOS returns the OS the runner was built for.
 func CurrentGOOS() string {
 	return runtime.GOOS
+}
+
+// Restart restarts the installed background service so it picks up a freshly
+// updated binary: systemctl on Linux, launchctl on macOS. It reports an error
+// (rather than acting) on platforms without a managed service.
+func Restart(goos string) error {
+	switch goos {
+	case "linux":
+		return runCommand("systemctl", "--user", "restart", "foreman-runner")
+	case "darwin":
+		return runCommand("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/%s", os.Getuid(), DarwinLabel))
+	default:
+		return fmt.Errorf("automatic restart is not supported on %s", goos)
+	}
+}
+
+func runCommand(name string, args ...string) error {
+	out, err := exec.Command(name, args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+
+	return nil
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {
