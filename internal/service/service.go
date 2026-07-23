@@ -29,8 +29,14 @@ type Plan struct {
 }
 
 // BuildPlan computes the install plan for goos with the given home directory.
-func BuildPlan(goos, home string) (Plan, error) {
+// currentPath is the operator's PATH at install time; it is baked into the
+// service definition so the background service resolves agent binaries (such
+// as "claude") the same way the operator's own shell does. Managed services
+// otherwise start with a bare PATH that omits per-user bin directories, which
+// makes agent launches fail with "executable file not found in $PATH".
+func BuildPlan(goos, home, currentPath string) (Plan, error) {
 	binDest := filepath.Join(home, ".local", "bin", "foreman-runner")
+	servicePath := servicePATH(home, currentPath)
 
 	switch goos {
 	case "linux":
@@ -39,7 +45,7 @@ func BuildPlan(goos, home string) (Plan, error) {
 		return Plan{
 			BinaryDest:  binDest,
 			UnitPath:    unit,
-			UnitContent: linuxUnit(binDest),
+			UnitContent: linuxUnit(binDest, servicePath),
 			EnableCommands: []string{
 				"systemctl --user daemon-reload",
 				"systemctl --user enable --now foreman-runner",
@@ -52,12 +58,40 @@ func BuildPlan(goos, home string) (Plan, error) {
 		return Plan{
 			BinaryDest:     binDest,
 			UnitPath:       plist,
-			UnitContent:    darwinPlist(binDest, filepath.Join(home, ".local", "state", "foreman", "runner.log")),
+			UnitContent:    darwinPlist(binDest, filepath.Join(home, ".local", "state", "foreman", "runner.log"), servicePath),
 			EnableCommands: []string{fmt.Sprintf("launchctl load %s", plist)},
 		}, nil
 	default:
 		return Plan{}, fmt.Errorf("service install is not supported on %s; run \"foreman-runner run\" manually", goos)
 	}
+}
+
+// servicePATH builds the PATH the background service should run with. It leads
+// with the user's own bin directories, then appends the operator's current
+// PATH, then a set of standard system directories as a fallback for the case
+// where install ran with an empty environment. Duplicates are dropped while the
+// first occurrence order is kept.
+func servicePATH(home, currentPath string) string {
+	var dirs []string
+	seen := make(map[string]bool)
+	add := func(dir string) {
+		if dir == "" || seen[dir] {
+			return
+		}
+		seen[dir] = true
+		dirs = append(dirs, dir)
+	}
+
+	add(filepath.Join(home, ".local", "bin"))
+	add(filepath.Join(home, "bin"))
+	for _, dir := range filepath.SplitList(currentPath) {
+		add(dir)
+	}
+	for _, dir := range []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"} {
+		add(dir)
+	}
+
+	return strings.Join(dirs, ":")
 }
 
 // Apply installs the binary (copied from currentExec) and writes the unit file.
@@ -82,7 +116,7 @@ func (p Plan) Apply(currentExec string) error {
 	return nil
 }
 
-func linuxUnit(binPath string) string {
+func linuxUnit(binPath, pathEnv string) string {
 	return fmt.Sprintf(`[Unit]
 Description=foreman runner
 After=network-online.target
@@ -90,16 +124,17 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=PATH=%s
 ExecStart=%s run
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, binPath)
+`, pathEnv, binPath)
 }
 
-func darwinPlist(binPath, logPath string) string {
+func darwinPlist(binPath, logPath, pathEnv string) string {
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -111,6 +146,11 @@ func darwinPlist(binPath, logPath string) string {
 		<string>%s</string>
 		<string>run</string>
 	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>%s</string>
+	</dict>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
@@ -121,7 +161,7 @@ func darwinPlist(binPath, logPath string) string {
 	<string>%s</string>
 </dict>
 </plist>
-`, binPath, logPath, logPath)
+`, binPath, pathEnv, logPath, logPath)
 }
 
 // DefaultHome returns the current user's home directory.

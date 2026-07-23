@@ -74,6 +74,12 @@ unit (`~/.config/systemd/user/foreman-runner.service`) on Linux, a LaunchAgent
 binary to `~/.local/bin/foreman-runner`, writes the service file, and prints the
 command to enable it — it does not enable it for you.
 
+The service file bakes in a `PATH` that leads with your user bin directories
+(`~/.local/bin`, `~/bin`) followed by your current `PATH`. Managed services
+otherwise start with a bare `PATH` and cannot find agent binaries such as
+`claude`, which makes tasks fail to launch. Rerun `install` if you move an agent
+binary to a directory that is not yet covered.
+
 ### `update`
 
 Updates the runner in place. It asks the server for the latest released version
