@@ -29,6 +29,13 @@ type Spec struct {
 	PermissionMode string
 	// ClaudeBin is the agent binary name or path.
 	ClaudeBin string
+	// RemoteControl enables Claude Code's Remote Control (--remote-control) so
+	// the live session is controllable from Claude Web.
+	RemoteControl bool
+	// SessionName is the display name for the Remote Control session. It is
+	// passed as the explicit name of --remote-control so the flag cannot swallow
+	// the prompt argument that follows it. Falls back to Name when empty.
+	SessionName string
 	// ExtraArgs are passed to claude verbatim, before the prompt (e.g.
 	// --dangerously-skip-permissions to bypass the workspace trust dialog).
 	ExtraArgs []string
@@ -122,7 +129,9 @@ func Launch(s Spec) (*Result, error) {
 }
 
 // agentCommand builds the argv for the coding agent. It starts an interactive
-// session (no -p) so the run stays alive and controllable via /remote-control.
+// session (no -p) so the run stays alive, enabling Remote Control via the
+// native --remote-control flag, and passes the task prompt as the prompt
+// argument so Claude acts on it as the first turn.
 func (s Spec) agentCommand() []string {
 	args := []string{s.ClaudeBin}
 	if s.PermissionMode != "" {
@@ -130,6 +139,15 @@ func (s Spec) agentCommand() []string {
 	}
 	if s.Model != "" {
 		args = append(args, "--model", s.Model)
+	}
+	if s.RemoteControl {
+		// --remote-control takes an optional [name]; always pass an explicit
+		// name so it cannot consume the prompt argument that follows it.
+		name := s.SessionName
+		if name == "" {
+			name = s.Name
+		}
+		args = append(args, "--remote-control", name)
 	}
 	args = append(args, s.ExtraArgs...)
 	args = append(args, s.Prompt)

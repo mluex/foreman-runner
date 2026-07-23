@@ -169,16 +169,14 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 		return
 	}
 
-	// every task runs as a live, interactive session prefixed with
-	// /remote-control, so it is controllable from Claude Web - that is the point
-	if !strings.HasPrefix(strings.TrimSpace(prompt), "/remote-control") {
-		prompt = "/remote-control " + prompt
-	}
-
 	logDir := defaultLogDir()
 	exitFile := filepath.Join(logDir, "task-"+task.TaskID+".exit")
 	_ = os.Remove(exitFile)
 
+	// every task runs as a live, interactive session with Remote Control enabled
+	// so it is controllable from Claude Web - that is the point. The prompt is
+	// passed as the prompt argument (not prefixed with /remote-control, which
+	// would be interpreted as the session name), so Claude acts on it directly.
 	res, err := session.Launch(session.Spec{
 		Name:           "foreman-task-" + task.TaskID,
 		TaskID:         task.TaskID,
@@ -187,6 +185,8 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 		Model:          payload.Model,
 		PermissionMode: mapEffort(payload.Effort),
 		ClaudeBin:      claudeBin,
+		RemoteControl:  true,
+		SessionName:    remoteControlName(payload.Title, task.TaskID),
 		LogDir:         logDir,
 		ExitCodeFile:   exitFile,
 	})
@@ -270,6 +270,19 @@ func finish(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey, 
 	if err := client.FinishTask(taskID, cfg.APIToken, privKey, code); err != nil {
 		fmt.Fprintln(os.Stderr, "finish error:", err)
 	}
+}
+
+// remoteControlName derives the Remote Control session display name from the
+// task title, falling back to a task-derived name. It returns a single-line
+// value that never starts with a dash, so it cannot be mistaken for an option
+// when passed as the explicit name of --remote-control.
+func remoteControlName(title, taskID string) string {
+	name := strings.TrimSpace(strings.SplitN(title, "\n", 2)[0])
+	if name == "" || strings.HasPrefix(name, "-") {
+		return "foreman-task-" + taskID
+	}
+
+	return name
 }
 
 // mapEffort maps the task effort selection (the web UI offers auto, plan, and

@@ -35,7 +35,7 @@ func cmdSpawn(args []string) error {
 		prompt        = fs.String("prompt", "", "prompt submitted to the agent (required)")
 		model         = fs.String("model", "", "model alias passed to claude --model (empty = claude default)")
 		permMode      = fs.String("permission-mode", "auto", "claude --permission-mode value")
-		remoteControl = fs.Bool("remote-control", true, "prefix the prompt with /remote-control")
+		remoteControl = fs.Bool("remote-control", true, "enable Claude Code Remote Control for the session")
 		name          = fs.String("session", "", "tmux session name (empty = generated)")
 		taskID        = fs.String("task-id", "", "task id exposed as FOREMAN_TASK_ID (empty = generated)")
 		skipPerms     = fs.Bool("skip-permissions", false, "launch claude with --dangerously-skip-permissions (adds its own one-time acceptance gate; auto mode is preferred for unattended runs)")
@@ -70,11 +70,6 @@ func cmdSpawn(args []string) error {
 		sessName = "foreman-task-" + id
 	}
 
-	finalPrompt := *prompt
-	if *remoteControl && !strings.HasPrefix(strings.TrimSpace(finalPrompt), "/remote-control") {
-		finalPrompt = "/remote-control " + finalPrompt
-	}
-
 	// --permission-mode auto handles in-session permissions unattended, so
 	// --dangerously-skip-permissions is off by default: it does not skip the
 	// trust gate and adds its own one-time "Bypass Permissions" acceptance
@@ -100,10 +95,12 @@ func cmdSpawn(args []string) error {
 		Name:           sessName,
 		TaskID:         id,
 		Dir:            absDir,
-		Prompt:         finalPrompt,
+		Prompt:         *prompt,
 		Model:          *model,
 		PermissionMode: *permMode,
 		ClaudeBin:      *claudeBin,
+		RemoteControl:  *remoteControl,
+		SessionName:    sessName,
 		ExtraArgs:      extraArgs,
 		LogDir:         *logDir,
 	})
