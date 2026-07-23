@@ -178,6 +178,41 @@ func WaitExit(name, exitFile string, poll time.Duration) (int, error) {
 	return code, nil
 }
 
+// Cancel gracefully shuts a running session down. It sends the agent two
+// Ctrl-C keystrokes (Claude Code exits on a double interrupt) followed by
+// /exit, waits up to grace for the session to end on its own, and hard-kills
+// the tmux session as a last resort. It is a no-op if the session is already
+// gone.
+func Cancel(name string, grace time.Duration) error {
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		return err
+	}
+	if !hasSession(tmuxBin, name) {
+		return nil
+	}
+
+	_ = exec.Command(tmuxBin, "send-keys", "-t", name, "C-c").Run()
+	time.Sleep(300 * time.Millisecond)
+	_ = exec.Command(tmuxBin, "send-keys", "-t", name, "C-c").Run()
+	time.Sleep(300 * time.Millisecond)
+	_ = exec.Command(tmuxBin, "send-keys", "-t", name, "-l", "/exit").Run()
+	_ = exec.Command(tmuxBin, "send-keys", "-t", name, "Enter").Run()
+
+	deadline := time.Now().Add(grace)
+	for time.Now().Before(deadline) {
+		if !hasSession(tmuxBin, name) {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	if !hasSession(tmuxBin, name) {
+		return nil
+	}
+	return exec.Command(tmuxBin, "kill-session", "-t", name).Run()
+}
+
 func hasSession(tmuxBin, name string) bool {
 	return exec.Command(tmuxBin, "has-session", "-t", name).Run() == nil
 }
