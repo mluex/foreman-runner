@@ -183,7 +183,7 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 		Dir:            dir,
 		Prompt:         prompt,
 		Model:          payload.Model,
-		PermissionMode: mapEffort(payload.Effort),
+		PermissionMode: mapMode(payload.Mode),
 		ClaudeBin:      claudeBin,
 		RemoteControl:  true,
 		SessionName:    remoteControlName(payload.Title, task.TaskID),
@@ -285,13 +285,13 @@ func remoteControlName(title, taskID string) string {
 	return name
 }
 
-// mapEffort maps the task effort selection (the web UI offers auto, plan, and
+// mapMode maps the task mode selection (the web UI offers auto, plan, and
 // code-only) to a claude --permission-mode value. Unattended runs need a
 // non-interactive mode or the session stalls on the first permission prompt, so
 // auto is both the "auto" selection and the fallback - matching the PoC spawn
 // default that boots straight into a live session. See docs/BRIEFING.md §15.
-func mapEffort(effort string) string {
-	switch effort {
+func mapMode(mode string) string {
+	switch mode {
 	case "plan":
 		return "plan"
 	case "code-only":

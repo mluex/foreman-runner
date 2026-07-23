@@ -163,7 +163,7 @@ type TaskPayload struct {
 	RunnerID string `json:"runner_id"`
 	Agent    string `json:"agent"`
 	Model    string `json:"model"`
-	Effort   string `json:"effort"`
+	Mode     string `json:"mode"`
 	Prompt   string `json:"prompt"`
 	Title    string `json:"title"`
 }
