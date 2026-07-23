@@ -232,15 +232,19 @@ func finish(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey, 
 	}
 }
 
-// mapEffort maps the task effort to a claude --permission-mode value. The exact
-// mapping is provisional (see docs/BRIEFING.md §15); unattended runs default to
-// accepting edits.
+// mapEffort maps the task effort selection (the web UI offers auto, plan, and
+// code-only) to a claude --permission-mode value. Unattended runs need a
+// non-interactive mode or the session stalls on the first permission prompt, so
+// auto is both the "auto" selection and the fallback - matching the PoC spawn
+// default that boots straight into a live session. See docs/BRIEFING.md §15.
 func mapEffort(effort string) string {
 	switch effort {
 	case "plan":
 		return "plan"
-	default:
+	case "code-only":
 		return "acceptEdits"
+	default:
+		return "auto"
 	}
 }
 
