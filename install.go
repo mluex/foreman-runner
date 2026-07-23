@@ -31,7 +31,7 @@ func cmdInstall(args []string) error {
 		self = resolved
 	}
 
-	plan, err := service.BuildPlan(service.CurrentGOOS(), home)
+	plan, err := service.BuildPlan(service.CurrentGOOS(), home, os.Getenv("PATH"))
 	if err != nil {
 		return err
 	}
