@@ -17,6 +17,8 @@ import (
 type Config struct {
 	RunnerID      string `json:"runner_id"`
 	RunnerPrivKey string `json:"runner_privkey"` // base64, 64-byte Ed25519 private key
+	EncPrivKey    string `json:"enc_privkey"`    // base64, 32-byte X25519 private key (sealed-box decryption)
+	EncPubKey     string `json:"enc_pubkey"`     // base64, 32-byte X25519 public key
 	APIToken      string `json:"api_token"`
 	UserPubKey    string `json:"user_pubkey"` // base64, 32-byte Ed25519 public key
 	ServerURL     string `json:"server_url"`
