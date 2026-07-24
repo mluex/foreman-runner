@@ -116,6 +116,12 @@ func cmdRun(args []string) error {
 				fmt.Fprintln(os.Stderr, "warn: could not persist rotated user key:", saveErr)
 			}
 		}
+		if resp.UserEncPubKey != "" && resp.UserEncPubKey != cfg.UserEncPubKey {
+			cfg.UserEncPubKey = resp.UserEncPubKey
+			if saveErr := config.Save(*configPath, cfg); saveErr != nil {
+				fmt.Fprintln(os.Stderr, "warn: could not persist user encryption key:", saveErr)
+			}
+		}
 		fmt.Printf("heartbeat ok  agents=%d  server_time=%s\n", len(req.Agents), resp.ServerTime)
 		return nil
 	}
@@ -183,9 +189,14 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 
 	prompt := payload.Prompt
 	title := payload.Title
+	encryptLogs := payload.Enc == "x25519-sealedbox"
 	if payload.Enc == "x25519-sealedbox" {
 		if cfg.EncPrivKey == "" || cfg.EncPubKey == "" {
 			reject(client, cfg, privKey, task.TaskID, "task is encrypted but the runner has no encryption key; re-enroll")
+			return
+		}
+		if cfg.UserEncPubKey == "" {
+			reject(client, cfg, privKey, task.TaskID, "task is encrypted but the user encryption key is not known yet; try again shortly")
 			return
 		}
 		decryptedPrompt, err := enc.OpenSealedBase64(payload.Prompt, cfg.EncPubKey, cfg.EncPrivKey)
@@ -245,6 +256,14 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 	go func() {
 		defer logsDone.Done()
 		logstream.Stream(res.LogFile, 2*time.Second, func(seq int, chunk string) error {
+			if encryptLogs {
+				sealed, sealErr := enc.SealBase64(chunk, cfg.UserEncPubKey)
+				if sealErr != nil {
+					return sealErr
+				}
+				chunk = sealed
+			}
+
 			return client.SendLog(task.TaskID, cfg.APIToken, privKey, seq, chunk)
 		}, stopLogs)
 	}()

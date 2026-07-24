@@ -56,6 +56,26 @@ func TestOpenSealedRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSealOpenRoundTrip(t *testing.T) {
+	kp, err := GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
+
+	sealed, err := SealBase64("log chunk output", kp.PublicKey)
+	if err != nil {
+		t.Fatalf("SealBase64: %v", err)
+	}
+
+	plaintext, err := OpenSealedBase64(sealed, kp.PublicKey, kp.PrivateKey)
+	if err != nil {
+		t.Fatalf("OpenSealedBase64: %v", err)
+	}
+	if plaintext != "log chunk output" {
+		t.Errorf("round-trip = %q, want %q", plaintext, "log chunk output")
+	}
+}
+
 func TestOpenSealedWrongKeyFails(t *testing.T) {
 	recipient, _ := GenerateKeypair()
 	pub, _ := base64.StdEncoding.DecodeString(recipient.PublicKey)

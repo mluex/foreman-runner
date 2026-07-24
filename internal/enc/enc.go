@@ -68,6 +68,51 @@ func OpenSealed(sealed, publicKey, privateKey []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
+// Seal produces a libsodium sealed box (crypto_box_seal) for a recipient's
+// X25519 public key: ephemeral_pub (32 bytes) || box, with the nonce derived as
+// blake2b(ephemeral_pub || recipient_pub). Anonymous sender - only the recipient
+// can open it.
+func Seal(message, recipientPub []byte) ([]byte, error) {
+	if len(recipientPub) != 32 {
+		return nil, fmt.Errorf("x25519 public key must be 32 bytes, got %d", len(recipientPub))
+	}
+
+	ephemeralPub, ephemeralPriv, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate ephemeral key: %w", err)
+	}
+	var recipient [32]byte
+	copy(recipient[:], recipientPub)
+
+	hash, err := blake2b.New(24, nil)
+	if err != nil {
+		return nil, fmt.Errorf("init blake2b: %w", err)
+	}
+	hash.Write(ephemeralPub[:])
+	hash.Write(recipient[:])
+	var nonce [24]byte
+	copy(nonce[:], hash.Sum(nil))
+
+	// box.Seal appends the box to its first argument, so seeding it with the
+	// ephemeral public key yields the ephemeral_pub || box layout.
+	return box.Seal(ephemeralPub[:], message, &nonce, &recipient, ephemeralPriv), nil
+}
+
+// SealBase64 seals a string to a base64 recipient key and returns base64.
+func SealBase64(message, recipientPubB64 string) (string, error) {
+	recipientPub, err := base64.StdEncoding.DecodeString(recipientPubB64)
+	if err != nil {
+		return "", fmt.Errorf("decode recipient key: %w", err)
+	}
+
+	sealed, err := Seal([]byte(message), recipientPub)
+	if err != nil {
+		return "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(sealed), nil
+}
+
 // OpenSealedBase64 is OpenSealed over base64-encoded inputs, returning the
 // decrypted plaintext as a string.
 func OpenSealedBase64(sealedB64, publicKeyB64, privateKeyB64 string) (string, error) {
