@@ -167,8 +167,8 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 
 	prompt := payload.Prompt
 	title := payload.Title
-	if "x25519-sealedbox" == payload.Enc {
-		if "" == cfg.EncPrivKey || "" == cfg.EncPubKey {
+	if payload.Enc == "x25519-sealedbox" {
+		if cfg.EncPrivKey == "" || cfg.EncPubKey == "" {
 			reject(client, cfg, privKey, task.TaskID, "task is encrypted but the runner has no encryption key; re-enroll")
 			return
 		}
@@ -179,7 +179,7 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 		}
 		prompt = decryptedPrompt
 
-		if "" != payload.Title {
+		if payload.Title != "" {
 			decryptedTitle, err := enc.OpenSealedBase64(payload.Title, cfg.EncPubKey, cfg.EncPrivKey)
 			if err != nil {
 				reject(client, cfg, privKey, task.TaskID, "cannot decrypt title: "+err.Error())
@@ -189,7 +189,7 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 		}
 	}
 
-	if "" == prompt {
+	if prompt == "" {
 		reject(client, cfg, privKey, task.TaskID, "task has no prompt")
 		return
 	}

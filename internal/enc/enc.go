@@ -39,7 +39,7 @@ func GenerateKeypair() (Keypair, error) {
 // blake2b(ephemeral_pubkey || recipient_pubkey). publicKey and privateKey are
 // the runner's raw 32-byte X25519 keys.
 func OpenSealed(sealed, publicKey, privateKey []byte) ([]byte, error) {
-	if 32 != len(publicKey) || 32 != len(privateKey) {
+	if len(publicKey) != 32 || len(privateKey) != 32 {
 		return nil, fmt.Errorf("x25519 keys must be 32 bytes, got pub=%d priv=%d", len(publicKey), len(privateKey))
 	}
 	if len(sealed) < 32+box.Overhead {
