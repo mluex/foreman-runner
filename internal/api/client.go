@@ -168,6 +168,7 @@ type TaskPayload struct {
 	Mode     string `json:"mode"`
 	Prompt   string `json:"prompt"`
 	Title    string `json:"title"`
+	Enc      string `json:"enc"` // "" or "x25519-sealedbox"; when set, prompt/title are base64 sealed boxes
 }
 
 // NextTask claims the next pending task for the runner, or returns (nil, nil)
