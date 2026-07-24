@@ -11,6 +11,7 @@ import (
 
 	"github.com/mluex/foreman-runner/internal/api"
 	"github.com/mluex/foreman-runner/internal/config"
+	"github.com/mluex/foreman-runner/internal/enc"
 	"github.com/mluex/foreman-runner/internal/platform"
 )
 
@@ -56,14 +57,22 @@ func cmdEnroll(args []string) error {
 		return fmt.Errorf("generate keypair: %w", err)
 	}
 
+	// X25519 keypair for end-to-end encryption: the browser seals task prompts
+	// to this public key; the private key never leaves the runner.
+	encKeys, err := enc.GenerateKeypair()
+	if err != nil {
+		return err
+	}
+
 	client := api.New(*server, *insecure)
 	resp, err := client.Enroll(api.EnrollRequest{
-		Code:         *code,
-		RunnerPubKey: base64.StdEncoding.EncodeToString(pub),
-		Hostname:     hostname,
-		OS:           goos,
-		Arch:         arch,
-		NameHint:     *name,
+		Code:            *code,
+		RunnerPubKey:    base64.StdEncoding.EncodeToString(pub),
+		RunnerEncPubKey: encKeys.PublicKey,
+		Hostname:        hostname,
+		OS:              goos,
+		Arch:            arch,
+		NameHint:        *name,
 	})
 	if err != nil {
 		return err
@@ -72,6 +81,8 @@ func cmdEnroll(args []string) error {
 	cfg := &config.Config{
 		RunnerID:      resp.RunnerID,
 		RunnerPrivKey: base64.StdEncoding.EncodeToString(priv),
+		EncPrivKey:    encKeys.PrivateKey,
+		EncPubKey:     encKeys.PublicKey,
 		APIToken:      resp.APIToken,
 		UserPubKey:    resp.UserPubKey,
 		ServerURL:     strings.TrimRight(*server, "/"),

@@ -82,6 +82,7 @@ func cmdRun(args []string) error {
 			RunnerID:  cfg.RunnerID,
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 			Nonce:     base64.StdEncoding.EncodeToString(randomBytes(16)),
+			EncPubKey: cfg.EncPubKey,
 			Agents:    agent.Detect(),
 			System:    system.Sample(),
 		}

@@ -36,12 +36,13 @@ func New(serverURL string, insecure bool) *Client {
 
 // EnrollRequest is the body of POST /api/runners/enroll.
 type EnrollRequest struct {
-	Code         string `json:"code"`
-	RunnerPubKey string `json:"runner_pubkey"` // base64, 32 bytes
-	Hostname     string `json:"hostname"`
-	OS           string `json:"os"`
-	Arch         string `json:"arch"`
-	NameHint     string `json:"name_hint,omitempty"`
+	Code            string `json:"code"`
+	RunnerPubKey    string `json:"runner_pubkey"`               // base64, 32 bytes (Ed25519)
+	RunnerEncPubKey string `json:"runner_enc_pubkey,omitempty"` // base64, 32 bytes (X25519)
+	Hostname        string `json:"hostname"`
+	OS              string `json:"os"`
+	Arch            string `json:"arch"`
+	NameHint        string `json:"name_hint,omitempty"`
 }
 
 // EnrollResponse is the server's reply to a successful enrollment.
@@ -103,6 +104,7 @@ type HeartbeatRequest struct {
 	RunnerID  string  `json:"runner_id"`
 	Timestamp string  `json:"timestamp"`
 	Nonce     string  `json:"nonce"`
+	EncPubKey string  `json:"enc_pubkey,omitempty"` // base64 X25519 public key, so the server can pick up runners enrolled before E2E
 	Agents    []Agent `json:"agents"`
 	System    System  `json:"system"`
 }
