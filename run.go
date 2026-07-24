@@ -18,6 +18,7 @@ import (
 	"github.com/mluex/foreman-runner/internal/agent"
 	"github.com/mluex/foreman-runner/internal/api"
 	"github.com/mluex/foreman-runner/internal/config"
+	"github.com/mluex/foreman-runner/internal/enc"
 	"github.com/mluex/foreman-runner/internal/logstream"
 	"github.com/mluex/foreman-runner/internal/session"
 	"github.com/mluex/foreman-runner/internal/system"
@@ -165,6 +166,29 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 	}
 
 	prompt := payload.Prompt
+	title := payload.Title
+	if payload.Enc == "x25519-sealedbox" {
+		if cfg.EncPrivKey == "" || cfg.EncPubKey == "" {
+			reject(client, cfg, privKey, task.TaskID, "task is encrypted but the runner has no encryption key; re-enroll")
+			return
+		}
+		decryptedPrompt, err := enc.OpenSealedBase64(payload.Prompt, cfg.EncPubKey, cfg.EncPrivKey)
+		if err != nil {
+			reject(client, cfg, privKey, task.TaskID, "cannot decrypt prompt: "+err.Error())
+			return
+		}
+		prompt = decryptedPrompt
+
+		if payload.Title != "" {
+			decryptedTitle, err := enc.OpenSealedBase64(payload.Title, cfg.EncPubKey, cfg.EncPrivKey)
+			if err != nil {
+				reject(client, cfg, privKey, task.TaskID, "cannot decrypt title: "+err.Error())
+				return
+			}
+			title = decryptedTitle
+		}
+	}
+
 	if prompt == "" {
 		reject(client, cfg, privKey, task.TaskID, "task has no prompt")
 		return
@@ -187,7 +211,7 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 		PermissionMode: mapMode(payload.Mode),
 		ClaudeBin:      claudeBin,
 		RemoteControl:  true,
-		SessionName:    remoteControlName(payload.Title, task.TaskID),
+		SessionName:    remoteControlName(title, task.TaskID),
 		LogDir:         logDir,
 		ExitCodeFile:   exitFile,
 	})
