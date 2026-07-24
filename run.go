@@ -50,6 +50,22 @@ func cmdRun(args []string) error {
 		return fmt.Errorf("not enrolled? run \"foreman-runner enroll\" first: %w", err)
 	}
 
+	// Runners enrolled before end-to-end encryption have no X25519 keypair.
+	// Generate one on first run so the heartbeat can publish the public key and
+	// the browser can seal task content to it.
+	if cfg.EncPrivKey == "" || cfg.EncPubKey == "" {
+		keys, genErr := enc.GenerateKeypair()
+		if genErr != nil {
+			return fmt.Errorf("generate encryption key: %w", genErr)
+		}
+		cfg.EncPrivKey = keys.PrivateKey
+		cfg.EncPubKey = keys.PublicKey
+		if saveErr := config.Save(*configPath, cfg); saveErr != nil {
+			return fmt.Errorf("persist encryption key: %w", saveErr)
+		}
+		fmt.Println("generated an encryption key for this runner")
+	}
+
 	privKey, err := decodePrivateKey(cfg.RunnerPrivKey)
 	if err != nil {
 		return err
