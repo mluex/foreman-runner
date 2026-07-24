@@ -20,7 +20,8 @@ type Config struct {
 	EncPrivKey    string `json:"enc_privkey"`    // base64, 32-byte X25519 private key (sealed-box decryption)
 	EncPubKey     string `json:"enc_pubkey"`     // base64, 32-byte X25519 public key
 	APIToken      string `json:"api_token"`
-	UserPubKey    string `json:"user_pubkey"` // base64, 32-byte Ed25519 public key
+	UserPubKey    string `json:"user_pubkey"`     // base64, 32-byte Ed25519 public key
+	UserEncPubKey string `json:"user_enc_pubkey"` // base64, 32-byte X25519 public key (log encryption)
 	ServerURL     string `json:"server_url"`
 	OS            string `json:"os"`
 	Arch          string `json:"arch"`

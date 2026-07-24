@@ -85,6 +85,7 @@ func cmdEnroll(args []string) error {
 		EncPubKey:     encKeys.PublicKey,
 		APIToken:      resp.APIToken,
 		UserPubKey:    resp.UserPubKey,
+		UserEncPubKey: resp.UserEncPubKey,
 		ServerURL:     strings.TrimRight(*server, "/"),
 		OS:            goos,
 		Arch:          arch,

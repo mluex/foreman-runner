@@ -47,10 +47,11 @@ type EnrollRequest struct {
 
 // EnrollResponse is the server's reply to a successful enrollment.
 type EnrollResponse struct {
-	RunnerID   string `json:"runner_id"`
-	APIToken   string `json:"api_token"`
-	UserPubKey string `json:"user_pubkey"` // base64, 32 bytes
-	ServerTime string `json:"server_time"`
+	RunnerID      string `json:"runner_id"`
+	APIToken      string `json:"api_token"`
+	UserPubKey    string `json:"user_pubkey"`     // base64, 32 bytes (Ed25519)
+	UserEncPubKey string `json:"user_enc_pubkey"` // base64, 32 bytes (X25519)
+	ServerTime    string `json:"server_time"`
 }
 
 // Enroll registers this runner with the server.
@@ -112,8 +113,9 @@ type HeartbeatRequest struct {
 // HeartbeatResponse is the server's reply; UserPubKey lets the runner pick up
 // owner key rotations.
 type HeartbeatResponse struct {
-	UserPubKey string `json:"user_pubkey"`
-	ServerTime string `json:"server_time"`
+	UserPubKey    string `json:"user_pubkey"`
+	UserEncPubKey string `json:"user_enc_pubkey"`
+	ServerTime    string `json:"server_time"`
 }
 
 // Heartbeat sends a signed heartbeat. The body is signed with the runner's
