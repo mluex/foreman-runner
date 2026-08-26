@@ -22,13 +22,24 @@ import (
 	"github.com/mluex/foreman-runner/internal/logstream"
 	"github.com/mluex/foreman-runner/internal/session"
 	"github.com/mluex/foreman-runner/internal/system"
+	"github.com/mluex/foreman-runner/internal/taskstate"
 	"github.com/mluex/foreman-runner/internal/trust"
 )
+
+// sessionPrefix is what every task session is named after, which is also how
+// the runner recognizes its own sessions again after a restart.
+const sessionPrefix = "foreman-task-"
+
+// encSealedBox is the payload encryption marker; when a task carries it, prompt
+// and title arrive as sealed boxes and log chunks go back sealed as well.
+const encSealedBox = "x25519-sealedbox"
 
 // cmdRun is the runner daemon: it loads the enrolled config, sends signed
 // heartbeats, and polls for tasks. A claimed task's signature is verified
 // against the owner's public key before the agent is launched; the agent's
-// exit code is reported back when it finishes.
+// exit code is reported back when it finishes. Tasks are supervised in their
+// own goroutines up to the configured slot limit, so a long-lived session never
+// blocks the queue or the heartbeat.
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	var (
@@ -39,6 +50,7 @@ func cmdRun(args []string) error {
 		cancelPollInterval = fs.Duration("cancel-poll-interval", 3*time.Second, "how often to check for a web-requested cancellation while a task runs")
 		workDir            = fs.String("dir", "", "working directory agents run in (default: current directory)")
 		claudeBin          = fs.String("claude-bin", "claude", "agent binary name or path")
+		maxTasks           = fs.Int("max-tasks", 0, "tasks to run at the same time (0 = max_tasks from the config file)")
 		once               = fs.Bool("once", false, "send a single heartbeat and exit")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -130,10 +142,30 @@ func cmdRun(args []string) error {
 		return heartbeat()
 	}
 
-	fmt.Printf("runner %s heartbeating to %s (heartbeat %s, poll %s)\n", cfg.RunnerID, cfg.ServerURL, *interval, *pollInterval)
+	slots := *maxTasks
+	if slots < 1 {
+		slots = cfg.TaskSlots()
+	}
+
+	sup := &supervisor{
+		client:             client,
+		cfg:                cfg,
+		privKey:            privKey,
+		userPubKey:         userPubKey,
+		dir:                dir,
+		claudeBin:          *claudeBin,
+		cancelPollInterval: *cancelPollInterval,
+		logDir:             defaultLogDir(),
+		maxTasks:           slots,
+		active:             make(map[string]struct{}),
+	}
+
+	fmt.Printf("runner %s heartbeating to %s (heartbeat %s, poll %s, up to %d tasks at once)\n", cfg.RunnerID, cfg.ServerURL, *interval, *pollInterval, slots)
 	if err := heartbeat(); err != nil {
 		fmt.Fprintln(os.Stderr, "heartbeat error:", err)
 	}
+
+	sup.adopt()
 
 	heartbeatTicker := time.NewTicker(*interval)
 	defer heartbeatTicker.Stop()
@@ -150,66 +182,217 @@ func cmdRun(args []string) error {
 				fmt.Fprintln(os.Stderr, "heartbeat error:", err)
 			}
 		case <-pollTicker.C:
-			task, err := client.NextTask(cfg.RunnerID, cfg.APIToken)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "poll error:", err)
-				continue
-			}
-			if task != nil {
-				runTask(client, cfg, privKey, userPubKey, task, dir, *claudeBin, *cancelPollInterval)
-			}
+			sup.claim()
 		case <-stop:
-			fmt.Println("shutting down")
+			// task sessions are detached and outlive this process; their state
+			// files let the next start pick them up where they left off
+			fmt.Printf("shutting down (%d task(s) keep running; they are adopted on the next start)\n", sup.inFlight())
 			return nil
 		}
 	}
 }
 
-// runTask verifies a claimed task's signature, launches the agent, waits for it
-// to finish, and reports the exit code. An invalid signature is rejected. While
-// the agent runs it watches for a cancellation requested from the web UI and
-// tears the session down when one arrives.
-func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey, userPubKey []byte, task *api.NextTaskResponse, dir, claudeBin string, cancelPollInterval time.Duration) {
+// supervisor owns the runner's in-flight tasks: it claims new ones while slots
+// are free, adopts sessions that outlived a previous process, and reports every
+// task's logs and exit code back to the server.
+type supervisor struct {
+	client             *api.Client
+	cfg                *config.Config
+	privKey            ed25519.PrivateKey
+	userPubKey         []byte
+	dir                string
+	claudeBin          string
+	cancelPollInterval time.Duration
+	logDir             string
+	maxTasks           int
+
+	mu     sync.Mutex
+	active map[string]struct{}
+}
+
+func (s *supervisor) inFlight() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.active)
+}
+
+// track registers a task as in flight, reporting false when this runner is
+// already supervising it - a claim the server handed out twice must never end
+// up with two supervisors on one session.
+func (s *supervisor) track(taskID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, running := s.active[taskID]; running {
+		return false
+	}
+	s.active[taskID] = struct{}{}
+
+	return true
+}
+
+func (s *supervisor) untrack(taskID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.active, taskID)
+}
+
+// claim takes tasks off the queue until it is empty or every slot is busy. It
+// keeps claiming within one tick so a batch of queued tasks starts together
+// instead of trickling in one poll interval at a time.
+func (s *supervisor) claim() {
+	for s.inFlight() < s.maxTasks {
+		task, err := s.client.NextTask(s.cfg.RunnerID, s.cfg.APIToken)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "poll error:", err)
+
+			return
+		}
+		if task == nil {
+			return
+		}
+		if !s.track(task.TaskID) {
+			fmt.Fprintf(os.Stderr, "task %s is already running here; ignoring the duplicate claim\n", task.TaskID)
+
+			return
+		}
+
+		go func(claimed *api.NextTaskResponse) {
+			defer s.untrack(claimed.TaskID)
+			s.runTask(claimed)
+		}(task)
+	}
+}
+
+// adoptCandidate is a task the runner may have to pick up again: what we know
+// about it from disk, and whether that bookkeeping existed at all.
+type adoptCandidate struct {
+	state taskstate.State
+	known bool
+}
+
+// adopt picks up task sessions that outlived the runner process - a restart, a
+// self-update, a crash. Without it their output stops flowing and the server
+// keeps them on "running" forever. Sessions that ended while the runner was
+// down are closed out from their recorded state instead.
+func (s *supervisor) adopt() {
+	candidates := make(map[string]adoptCandidate)
+
+	for _, stored := range taskstate.List(s.logDir) {
+		candidates[stored.TaskID] = adoptCandidate{state: stored, known: true}
+	}
+
+	names, err := session.Names(sessionPrefix)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warn: could not list tmux sessions:", err)
+	}
+	for _, name := range names {
+		taskID := strings.TrimPrefix(name, sessionPrefix)
+		entry := candidates[taskID]
+		entry.state.TaskID = taskID
+		entry.state.Session = name
+		candidates[taskID] = entry
+	}
+
+	adopted := 0
+	for taskID, entry := range candidates {
+		status, err := s.client.TaskStatus(taskID, s.cfg.APIToken)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warn: could not check task %s: %v\n", taskID, err)
+
+			continue
+		}
+		if !status.Active() {
+			// the server has already closed this one out; drop our bookkeeping
+			// and leave whatever session is still up to its operator
+			taskstate.Remove(s.logDir, taskID)
+
+			continue
+		}
+
+		st := entry.state
+		if !entry.known {
+			// no bookkeeping for this session (a runner from before state files,
+			// or a cleared state dir): resume numbering above what the server
+			// stored and skip the backlog we cannot map to a sequence
+			st.LogFile = filepath.Join(s.logDir, "task-"+taskID+".log")
+			st.ExitFile = filepath.Join(s.logDir, "task-"+taskID+".exit")
+			st.EncryptLogs = status.Enc == encSealedBox
+			st.Seq = status.LastLogSeq
+			st.Offset = fileSize(st.LogFile)
+		}
+		if st.Session == "" {
+			st.Session = sessionPrefix + taskID
+		}
+
+		if !s.track(taskID) {
+			continue
+		}
+		adopted++
+		fmt.Printf("adopted task %s (session %s, resuming at seq %d)\n", taskID, st.Session, st.Seq)
+
+		go func(adoptedState taskstate.State) {
+			defer s.untrack(adoptedState.TaskID)
+			s.supervise(adoptedState)
+		}(st)
+	}
+
+	if adopted > 0 {
+		fmt.Printf("adopted %d task(s) from a previous run\n", adopted)
+	}
+}
+
+// runTask verifies a claimed task's signature, launches the agent, and hands
+// the live session to supervise. An invalid signature is rejected.
+func (s *supervisor) runTask(task *api.NextTaskResponse) {
 	fmt.Printf("claimed task %s\n", task.TaskID)
 
 	signature, err := base64.StdEncoding.DecodeString(task.Signature)
-	if err != nil || !ed25519.Verify(userPubKey, []byte(task.Payload), signature) {
+	if err != nil || !ed25519.Verify(s.userPubKey, []byte(task.Payload), signature) {
 		fmt.Fprintln(os.Stderr, "signature verification failed; rejecting task")
-		if rejErr := client.RejectTask(task.TaskID, cfg.APIToken, privKey, "signature verification failed"); rejErr != nil {
+		if rejErr := s.client.RejectTask(task.TaskID, s.cfg.APIToken, s.privKey, "signature verification failed"); rejErr != nil {
 			fmt.Fprintln(os.Stderr, "reject error:", rejErr)
 		}
+
 		return
 	}
 
 	var payload api.TaskPayload
 	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil {
-		reject(client, cfg, privKey, task.TaskID, "payload is not valid JSON")
+		reject(s.client, s.cfg, s.privKey, task.TaskID, "payload is not valid JSON")
+
 		return
 	}
 
 	prompt := payload.Prompt
 	title := payload.Title
-	encryptLogs := payload.Enc == "x25519-sealedbox"
-	if payload.Enc == "x25519-sealedbox" {
-		if cfg.EncPrivKey == "" || cfg.EncPubKey == "" {
-			reject(client, cfg, privKey, task.TaskID, "task is encrypted but the runner has no encryption key; re-enroll")
+	encryptLogs := payload.Enc == encSealedBox
+	if payload.Enc == encSealedBox {
+		if s.cfg.EncPrivKey == "" || s.cfg.EncPubKey == "" {
+			reject(s.client, s.cfg, s.privKey, task.TaskID, "task is encrypted but the runner has no encryption key; re-enroll")
+
 			return
 		}
-		if cfg.UserEncPubKey == "" {
-			reject(client, cfg, privKey, task.TaskID, "task is encrypted but the user encryption key is not known yet; try again shortly")
+		if s.cfg.UserEncPubKey == "" {
+			reject(s.client, s.cfg, s.privKey, task.TaskID, "task is encrypted but the user encryption key is not known yet; try again shortly")
+
 			return
 		}
-		decryptedPrompt, err := enc.OpenSealedBase64(payload.Prompt, cfg.EncPubKey, cfg.EncPrivKey)
+		decryptedPrompt, err := enc.OpenSealedBase64(payload.Prompt, s.cfg.EncPubKey, s.cfg.EncPrivKey)
 		if err != nil {
-			reject(client, cfg, privKey, task.TaskID, "cannot decrypt prompt: "+err.Error())
+			reject(s.client, s.cfg, s.privKey, task.TaskID, "cannot decrypt prompt: "+err.Error())
+
 			return
 		}
 		prompt = decryptedPrompt
 
 		if payload.Title != "" {
-			decryptedTitle, err := enc.OpenSealedBase64(payload.Title, cfg.EncPubKey, cfg.EncPrivKey)
+			decryptedTitle, err := enc.OpenSealedBase64(payload.Title, s.cfg.EncPubKey, s.cfg.EncPrivKey)
 			if err != nil {
-				reject(client, cfg, privKey, task.TaskID, "cannot decrypt title: "+err.Error())
+				reject(s.client, s.cfg, s.privKey, task.TaskID, "cannot decrypt title: "+err.Error())
+
 				return
 			}
 			title = decryptedTitle
@@ -217,12 +400,12 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 	}
 
 	if prompt == "" {
-		reject(client, cfg, privKey, task.TaskID, "task has no prompt")
+		reject(s.client, s.cfg, s.privKey, task.TaskID, "task has no prompt")
+
 		return
 	}
 
-	logDir := defaultLogDir()
-	exitFile := filepath.Join(logDir, "task-"+task.TaskID+".exit")
+	exitFile := filepath.Join(s.logDir, "task-"+task.TaskID+".exit")
 	_ = os.Remove(exitFile)
 
 	// every task runs as a live, interactive session with Remote Control enabled
@@ -230,49 +413,80 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 	// passed as the prompt argument (not prefixed with /remote-control, which
 	// would be interpreted as the session name), so Claude acts on it directly.
 	res, err := session.Launch(session.Spec{
-		Name:           "foreman-task-" + task.TaskID,
+		Name:           sessionPrefix + task.TaskID,
 		TaskID:         task.TaskID,
-		Dir:            dir,
+		Dir:            s.dir,
 		Prompt:         prompt,
 		Model:          payload.Model,
 		PermissionMode: mapMode(payload.Mode),
-		ClaudeBin:      claudeBin,
+		ClaudeBin:      s.claudeBin,
 		RemoteControl:  true,
 		SessionName:    remoteControlName(title, task.TaskID),
-		LogDir:         logDir,
+		LogDir:         s.logDir,
 		ExitCodeFile:   exitFile,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "launch failed:", err)
-		finish(client, cfg, privKey, task.TaskID, 1)
+		finish(s.client, s.cfg, s.privKey, task.TaskID, 1)
+
 		return
 	}
 
 	fmt.Printf("running %s (session %s)\n", task.TaskID, res.Name)
+
+	s.supervise(taskstate.State{
+		TaskID:      task.TaskID,
+		Session:     res.Name,
+		LogFile:     res.LogFile,
+		ExitFile:    exitFile,
+		EncryptLogs: encryptLogs,
+	})
+}
+
+// supervise streams a live session's output, watches for a cancellation
+// requested from the web UI, and reports the exit code once the session ends.
+// It resumes from the sequence and offset carried in st, so an adopted session
+// continues its log where the previous process left off.
+func (s *supervisor) supervise(st taskstate.State) {
+	if err := taskstate.Save(s.logDir, st); err != nil {
+		fmt.Fprintln(os.Stderr, "warn: could not record task state:", err)
+	}
 
 	stopLogs := make(chan struct{})
 	var logsDone sync.WaitGroup
 	logsDone.Add(1)
 	go func() {
 		defer logsDone.Done()
-		logstream.Stream(res.LogFile, 2*time.Second, func(seq int, chunk string) error {
-			if encryptLogs {
-				sealed, sealErr := enc.SealBase64(chunk, cfg.UserEncPubKey)
+
+		onProgress := func(p logstream.Progress) {
+			advanced := st
+			advanced.Seq = p.Seq
+			advanced.Offset = p.Offset
+			if err := taskstate.Save(s.logDir, advanced); err != nil {
+				fmt.Fprintln(os.Stderr, "warn: could not record log progress:", err)
+			}
+		}
+
+		logstream.StreamFrom(st.LogFile, 2*time.Second, logstream.Progress{Seq: st.Seq, Offset: st.Offset}, onProgress, func(seq int, chunk string) error {
+			if st.EncryptLogs {
+				sealed, sealErr := enc.SealBase64(chunk, s.cfg.UserEncPubKey)
 				if sealErr != nil {
 					return sealErr
 				}
 				chunk = sealed
 			}
 
-			return client.SendLog(task.TaskID, cfg.APIToken, privKey, seq, chunk)
+			return s.client.SendLog(st.TaskID, s.cfg.APIToken, s.privKey, seq, chunk)
 		}, stopLogs)
 	}()
 
 	stopCancelWatch := make(chan struct{})
-	go watchForCancel(client, cfg, task.TaskID, res.Name, cancelPollInterval, stopCancelWatch)
+	go watchForCancel(s.client, s.cfg, st.TaskID, st.Session, s.cancelPollInterval, stopCancelWatch)
 
-	code, err := session.WaitExit(res.Name, exitFile, time.Second)
+	code, err := session.WaitExit(st.Session, st.ExitFile, time.Second)
 	if err != nil {
+		// a session that ended without leaving an exit code (a reboot, a hard
+		// kill) cannot be reported honestly as a success
 		fmt.Fprintln(os.Stderr, "wait error:", err)
 		code = 1
 	}
@@ -284,8 +498,9 @@ func runTask(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey,
 	close(stopLogs)
 	logsDone.Wait()
 
-	finish(client, cfg, privKey, task.TaskID, code)
-	fmt.Printf("finished %s exit=%d\n", task.TaskID, code)
+	finish(s.client, s.cfg, s.privKey, st.TaskID, code)
+	taskstate.Remove(s.logDir, st.TaskID)
+	fmt.Printf("finished %s exit=%d\n", st.TaskID, code)
 }
 
 // watchForCancel polls the server for a cancellation requested from the web UI
@@ -332,6 +547,16 @@ func finish(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey, 
 	}
 }
 
+// fileSize returns the size of a file, or 0 when it cannot be stat'ed.
+func fileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+
+	return info.Size()
+}
+
 // remoteControlName derives the Remote Control session display name from the
 // task title, falling back to a task-derived name. It returns a single-line
 // value that never starts with a dash, so it cannot be mistaken for an option
@@ -339,7 +564,7 @@ func finish(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey, 
 func remoteControlName(title, taskID string) string {
 	name := strings.TrimSpace(strings.SplitN(title, "\n", 2)[0])
 	if name == "" || strings.HasPrefix(name, "-") {
-		return "foreman-task-" + taskID
+		return sessionPrefix + taskID
 	}
 
 	return name

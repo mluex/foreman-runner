@@ -204,11 +204,21 @@ func (c *Client) NextTask(runnerID, token string) (*NextTaskResponse, error) {
 	return &out, nil
 }
 
-// TaskStatusResponse reports a task's current server-side status and whether
-// the operator has requested its cancellation.
+// TaskStatusResponse reports a task's current server-side status, whether the
+// operator has requested its cancellation, and what a runner needs to resume
+// the task's log stream after a restart: the last sequence the server stored
+// and whether chunks are sealed.
 type TaskStatusResponse struct {
 	Status          string `json:"status"`
 	CancelRequested bool   `json:"cancel_requested"`
+	LastLogSeq      int    `json:"last_log_seq"`
+	Enc             string `json:"enc"`
+}
+
+// Active reports whether the server still considers the task in flight, which
+// is what makes an orphaned session worth adopting.
+func (r *TaskStatusResponse) Active() bool {
+	return r.Status == "running" || r.Status == "cancelling"
 }
 
 // TaskStatus fetches the current status of a task. It is a lightweight

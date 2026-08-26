@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+// Progress marks how far a stream has got: the last sequence the server
+// accepted and the byte offset in the log file it ends at. Persisting it lets a
+// restarted runner resume a session's stream instead of replaying sequences the
+// server would discard as duplicates.
+type Progress struct {
+	Seq    int
+	Offset int64
+}
+
 // SendFunc delivers one ordered chunk. seq is a per-task monotonic sequence
 // starting at 1. It must return a non-nil error when the chunk was not
 // accepted, so the streamer can retry the same seq and bytes.
@@ -21,9 +30,16 @@ type SendFunc func(seq int, chunk string) error
 // seq always maps to the same bytes; combined with the server's dedup on
 // (task, seq), delivery is at-least-once without gaps or reordering.
 func Stream(logFile string, interval time.Duration, send SendFunc, stop <-chan struct{}) {
+	StreamFrom(logFile, interval, Progress{}, nil, send, stop)
+}
+
+// StreamFrom is Stream resumed at from, reporting every accepted chunk through
+// onProgress (which may be nil). A zero from starts at the beginning of the
+// file with sequence 1, which is what a freshly launched task wants.
+func StreamFrom(logFile string, interval time.Duration, from Progress, onProgress func(Progress), send SendFunc, stop <-chan struct{}) {
 	var (
-		offset     int64
-		seq        int
+		offset     = from.Offset
+		seq        = from.Seq
 		pending    []byte
 		pendingSeq int
 	)
@@ -43,6 +59,9 @@ func Stream(logFile string, interval time.Duration, send SendFunc, stop <-chan s
 		}
 		offset += int64(len(pending))
 		pending = nil
+		if onProgress != nil {
+			onProgress(Progress{Seq: pendingSeq, Offset: offset})
+		}
 	}
 
 	ticker := time.NewTicker(interval)
