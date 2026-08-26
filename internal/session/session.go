@@ -231,6 +231,41 @@ func Cancel(name string, grace time.Duration) error {
 	return exec.Command(tmuxBin, "kill-session", "-t", name).Run()
 }
 
+// Alive reports whether a session of that name is currently running.
+func Alive(name string) bool {
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		return false
+	}
+
+	return hasSession(tmuxBin, name)
+}
+
+// Names returns the live tmux sessions whose name starts with prefix. A tmux
+// server that is not running yields no names and no error - there is simply
+// nothing to adopt.
+func Names(prefix string) ([]string, error) {
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		return nil, fmt.Errorf("tmux not found on PATH: %w", err)
+	}
+
+	out, err := exec.Command(tmuxBin, "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return nil, nil
+	}
+
+	var names []string
+	for _, line := range strings.Split(string(out), "\n") {
+		name := strings.TrimSpace(line)
+		if name != "" && strings.HasPrefix(name, prefix) {
+			names = append(names, name)
+		}
+	}
+
+	return names, nil
+}
+
 func hasSession(tmuxBin, name string) bool {
 	return exec.Command(tmuxBin, "has-session", "-t", name).Run() == nil
 }

@@ -102,3 +102,52 @@ func TestStreamRetriesSameChunkAfterFailure(t *testing.T) {
 		t.Fatalf("accepted seqs = %v, want [1] (seq must not advance on failure)", acceptedSeqs)
 	}
 }
+
+func TestStreamFromResumesAtTheRecordedProgress(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "task.log")
+	appendTo(t, file, "already sent")
+
+	var mu sync.Mutex
+	var seqs []int
+	var builder strings.Builder
+	var progress []Progress
+	send := func(seq int, chunk string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		seqs = append(seqs, seq)
+		builder.WriteString(chunk)
+		return nil
+	}
+	onProgress := func(p Progress) {
+		mu.Lock()
+		defer mu.Unlock()
+		progress = append(progress, p)
+	}
+
+	from := Progress{Seq: 4, Offset: int64(len("already sent"))}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		StreamFrom(file, 5*time.Millisecond, from, onProgress, send, stop)
+		close(done)
+	}()
+
+	appendTo(t, file, " and the rest")
+	time.Sleep(30 * time.Millisecond)
+	close(stop)
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got := builder.String(); got != " and the rest" {
+		t.Fatalf("delivered %q, want %q", got, " and the rest")
+	}
+	if len(seqs) == 0 || seqs[0] != 5 {
+		t.Fatalf("first seq = %v, want it to continue at 5", seqs)
+	}
+	last := progress[len(progress)-1]
+	if want := int64(len("already sent and the rest")); last.Offset != want {
+		t.Fatalf("reported offset = %d, want %d", last.Offset, want)
+	}
+}

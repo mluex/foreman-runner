@@ -13,6 +13,12 @@ import (
 	"path/filepath"
 )
 
+// DefaultMaxTasks is how many tasks the runner works at the same time when the
+// config does not say otherwise. Tasks are long-lived interactive sessions, so
+// a serial runner would stall its queue on the first one; the limit is a
+// backstop against a runaway queue, not a throttle.
+const DefaultMaxTasks = 20
+
 // Config is the persisted runner state.
 type Config struct {
 	RunnerID      string `json:"runner_id"`
@@ -23,6 +29,7 @@ type Config struct {
 	UserPubKey    string `json:"user_pubkey"`     // base64, 32-byte Ed25519 public key
 	UserEncPubKey string `json:"user_enc_pubkey"` // base64, 32-byte X25519 public key (log encryption)
 	ServerURL     string `json:"server_url"`
+	MaxTasks      int    `json:"max_tasks,omitempty"` // tasks to run at once; 0 means DefaultMaxTasks
 	OS            string `json:"os"`
 	Arch          string `json:"arch"`
 }
@@ -37,6 +44,15 @@ func DefaultPath() string {
 		return filepath.Join(os.TempDir(), "foreman", "runner.json")
 	}
 	return filepath.Join(home, ".config", "foreman", "runner.json")
+}
+
+// TaskSlots returns the configured parallel task limit, falling back to
+// DefaultMaxTasks when the config carries no usable value.
+func (c *Config) TaskSlots() int {
+	if c.MaxTasks < 1 {
+		return DefaultMaxTasks
+	}
+	return c.MaxTasks
 }
 
 // Exists reports whether a config file is present at path.

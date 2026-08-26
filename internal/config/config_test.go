@@ -43,3 +43,24 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Errorf("round trip mismatch:\n got %+v\nwant %+v", out, in)
 	}
 }
+
+func TestTaskSlotsFallsBackToTheDefault(t *testing.T) {
+	cases := map[string]struct {
+		configured int
+		want       int
+	}{
+		"unset":    {configured: 0, want: DefaultMaxTasks},
+		"negative": {configured: -2, want: DefaultMaxTasks},
+		"one":      {configured: 1, want: 1},
+		"five":     {configured: 5, want: 5},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := &Config{MaxTasks: tc.configured}
+			if got := cfg.TaskSlots(); got != tc.want {
+				t.Fatalf("TaskSlots() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

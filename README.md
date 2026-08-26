@@ -52,8 +52,15 @@ config.
 
 ### `run`
 
-The daemon. Sends a signed heartbeat every `--interval`, polls
-`--poll-interval` for a task, and runs one task at a time.
+The daemon. Sends a signed heartbeat every `--interval` and polls
+`--poll-interval` for tasks, running up to `max_tasks` of them at the same time.
+
+Every task is a live interactive session that ends only when someone exits it,
+so a serial runner would stall its queue on the first one. Tasks are supervised
+in parallel instead: the runner keeps claiming while it has a free slot, and the
+heartbeat keeps going while tasks run. The server enforces its own per-runner
+limit as well (`max parallel tasks` on the runner card), so the effective limit
+is whichever of the two is lower.
 
 | Flag                     | Default   | Notes                                          |
 | ------------------------ | --------- | ---------------------------------------------- |
@@ -62,9 +69,33 @@ The daemon. Sends a signed heartbeat every `--interval`, polls
 | `--poll-interval`        | `5s`      | Task poll interval                             |
 | `--cancel-poll-interval` | `3s`      | How often a running task checks for a web-requested cancellation |
 | `--claude-bin`           | `claude`  | Agent binary name or path                      |
+| `--max-tasks`            | `max_tasks` from the config, else `20` | Tasks to run at the same time |
 | `--once`                 | `false`   | Send a single heartbeat and exit               |
 | `--insecure`             | `false`   | Skip TLS verification (self-signed dev only)   |
 | `--config`               | XDG path  | Config file location                           |
+
+Set the limit permanently in `~/.config/foreman/runner.json`:
+
+```json
+{ "max_tasks": 5 }
+```
+
+The service runs `foreman-runner run` without flags, so the config value is what
+a background service picks up; `--max-tasks` overrides it for one foreground run.
+
+#### Sessions survive a restart
+
+Task sessions are detached, so they outlive the runner process. On start the
+runner adopts its own live `foreman-task-*` sessions again: it resumes log
+streaming where it left off, keeps watching for a cancellation, and reports the
+exit code when the session ends. Sessions that ended while the runner was down
+are closed out from their recorded exit code on the next start.
+
+Bookkeeping lives in `task-<uuid>.state` next to each task log (default
+`~/.local/state/foreman`) and is removed when the task is reported finished. A
+task whose state file is gone resumes its log numbering above the last sequence
+the server has, which means the output produced while the runner was down is not
+backfilled.
 
 ### `install`
 
@@ -111,8 +142,9 @@ Claude Code session with log capture. Run `foreman-runner spawn -h` for flags.
 
 ## How a task runs
 
-1. `run` polls `GET /api/runners/{id}/next-task` (bearer auth) and claims one
-   pending task.
+1. `run` polls `GET /api/runners/{id}/next-task` (bearer auth) and claims
+   pending tasks while it has a free slot, several per poll if the queue holds
+   several.
 2. It verifies the task's Ed25519 signature against the owner's public key over
    the exact stored payload bytes. On failure it posts `reject` and keeps
    polling.
@@ -123,6 +155,9 @@ Claude Code session with log capture. Run `foreman-runner spawn -h` for flags.
    `(task, seq)`).
 5. When the agent exits, the runner flushes the remaining log output, then posts
    `/api/tasks/{id}/finish` with the exit code.
+
+Steps 3-5 run per task in their own goroutine, so several tasks progress at once
+and neither the poll loop nor the heartbeat waits on any of them.
 
 Heartbeat, reject, finish, and log requests are signed with the runner's Ed25519
 key and carry a timestamp; the server enforces a 60s freshness window.
