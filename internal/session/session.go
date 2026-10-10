@@ -21,8 +21,12 @@ type Spec struct {
 	TaskID string
 	// Dir is the working directory the agent runs in. Must exist.
 	Dir string
-	// Prompt is the full text submitted to the agent on start.
+	// Prompt is the full text submitted to the agent on start. Ignored when
+	// ResumeSessionID is set.
 	Prompt string
+	// ResumeSessionID reopens an earlier agent session (claude --resume)
+	// instead of starting a new one with Prompt.
+	ResumeSessionID string
 	// Model is passed to claude via --model. Empty means claude's default.
 	Model string
 	// PermissionMode maps to claude --permission-mode (e.g. "auto").
@@ -131,7 +135,8 @@ func Launch(s Spec) (*Result, error) {
 // agentCommand builds the argv for the coding agent. It starts an interactive
 // session (no -p) so the run stays alive, enabling Remote Control via the
 // native --remote-control flag, and passes the task prompt as the prompt
-// argument so Claude acts on it as the first turn.
+// argument so Claude acts on it as the first turn. A resume reopens the given
+// session instead and submits nothing.
 func (s Spec) agentCommand() []string {
 	args := []string{s.ClaudeBin}
 	if s.PermissionMode != "" {
@@ -150,6 +155,9 @@ func (s Spec) agentCommand() []string {
 		args = append(args, "--remote-control", name)
 	}
 	args = append(args, s.ExtraArgs...)
+	if s.ResumeSessionID != "" {
+		return append(args, "--resume", s.ResumeSessionID)
+	}
 	args = append(args, s.Prompt)
 	return args
 }

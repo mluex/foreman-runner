@@ -72,3 +72,26 @@ func indexOf(items []string, target string) int {
 
 	return -1
 }
+
+func TestAgentCommandResumesInsteadOfSubmittingThePrompt(t *testing.T) {
+	argv := Spec{
+		ClaudeBin:       "claude",
+		PermissionMode:  "auto",
+		RemoteControl:   true,
+		SessionName:     "my task",
+		Prompt:          "fix the login bug",
+		ResumeSessionID: "2a3310d3-a725-4ef3-bbf4-b9ff5616bf3d",
+	}.agentCommand()
+
+	if indexOf(argv, "fix the login bug") >= 0 {
+		t.Errorf("a resume must not submit the original prompt again: %v", argv)
+	}
+	idx := indexOf(argv, "--resume")
+	if idx < 0 || idx+1 >= len(argv) || argv[idx+1] != "2a3310d3-a725-4ef3-bbf4-b9ff5616bf3d" {
+		t.Errorf("expected --resume followed by the session id, got %v", argv)
+	}
+	rc := indexOf(argv, "--remote-control")
+	if rc < 0 || argv[rc+1] != "my task" {
+		t.Errorf("a resumed session keeps Remote Control with its explicit name, got %v", argv)
+	}
+}
