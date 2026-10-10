@@ -20,6 +20,7 @@ import (
 	"github.com/mluex/foreman-runner/internal/config"
 	"github.com/mluex/foreman-runner/internal/enc"
 	"github.com/mluex/foreman-runner/internal/logstream"
+	"github.com/mluex/foreman-runner/internal/resume"
 	"github.com/mluex/foreman-runner/internal/session"
 	"github.com/mluex/foreman-runner/internal/system"
 	"github.com/mluex/foreman-runner/internal/taskstate"
@@ -345,7 +346,8 @@ func (s *supervisor) adopt() {
 }
 
 // runTask verifies a claimed task's signature, launches the agent, and hands
-// the live session to supervise. An invalid signature is rejected.
+// the live session to supervise. An invalid signature is rejected. A resumed
+// task reopens the agent session it ran in before and continues its log.
 func (s *supervisor) runTask(task *api.NextTaskResponse) {
 	fmt.Printf("claimed task %s\n", task.TaskID)
 
@@ -399,10 +401,26 @@ func (s *supervisor) runTask(task *api.NextTaskResponse) {
 		}
 	}
 
-	if prompt == "" {
+	if prompt == "" && task.ResumeSessionID == "" {
 		reject(s.client, s.cfg, s.privKey, task.TaskID, "task has no prompt")
 
 		return
+	}
+
+	logFile := filepath.Join(s.logDir, "task-"+task.TaskID+".log")
+	var from logstream.Progress
+	if task.ResumeSessionID != "" {
+		// only a session this task's own log names: the id comes from the
+		// server, which must not be able to open other conversations here
+		if !resume.Recorded(logFile, task.ResumeSessionID) {
+			reject(s.client, s.cfg, s.privKey, task.TaskID, "cannot resume: this runner has no record of session "+task.ResumeSessionID+" for this task")
+
+			return
+		}
+		// the new session appends to the same log; stream only what it adds,
+		// numbered above what the server already holds
+		from = logstream.Progress{Seq: task.LastLogSeq, Offset: fileSize(logFile)}
+		fmt.Printf("resuming task %s (claude session %s)\n", task.TaskID, task.ResumeSessionID)
 	}
 
 	exitFile := filepath.Join(s.logDir, "task-"+task.TaskID+".exit")
@@ -413,21 +431,22 @@ func (s *supervisor) runTask(task *api.NextTaskResponse) {
 	// passed as the prompt argument (not prefixed with /remote-control, which
 	// would be interpreted as the session name), so Claude acts on it directly.
 	res, err := session.Launch(session.Spec{
-		Name:           sessionPrefix + task.TaskID,
-		TaskID:         task.TaskID,
-		Dir:            s.dir,
-		Prompt:         prompt,
-		Model:          payload.Model,
-		PermissionMode: mapMode(payload.Mode),
-		ClaudeBin:      s.claudeBin,
-		RemoteControl:  true,
-		SessionName:    remoteControlName(title, task.TaskID),
-		LogDir:         s.logDir,
-		ExitCodeFile:   exitFile,
+		Name:            sessionPrefix + task.TaskID,
+		TaskID:          task.TaskID,
+		Dir:             s.dir,
+		Prompt:          prompt,
+		ResumeSessionID: task.ResumeSessionID,
+		Model:           payload.Model,
+		PermissionMode:  mapMode(payload.Mode),
+		ClaudeBin:       s.claudeBin,
+		RemoteControl:   true,
+		SessionName:     remoteControlName(title, task.TaskID),
+		LogDir:          s.logDir,
+		ExitCodeFile:    exitFile,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "launch failed:", err)
-		finish(s.client, s.cfg, s.privKey, task.TaskID, 1)
+		finish(s.client, s.cfg, s.privKey, task.TaskID, 1, "")
 
 		return
 	}
@@ -440,11 +459,15 @@ func (s *supervisor) runTask(task *api.NextTaskResponse) {
 		LogFile:     res.LogFile,
 		ExitFile:    exitFile,
 		EncryptLogs: encryptLogs,
+		Seq:         from.Seq,
+		Offset:      from.Offset,
 	})
 }
 
 // supervise streams a live session's output, watches for a cancellation
-// requested from the web UI, and reports the exit code once the session ends.
+// requested from the web UI, and reports the exit code once the session ends,
+// together with the agent session named in the exit hint so the task can be
+// resumed later.
 // It resumes from the sequence and offset carried in st, so an adopted session
 // continues its log where the previous process left off.
 func (s *supervisor) supervise(st taskstate.State) {
@@ -498,9 +521,10 @@ func (s *supervisor) supervise(st taskstate.State) {
 	close(stopLogs)
 	logsDone.Wait()
 
-	finish(s.client, s.cfg, s.privKey, st.TaskID, code)
+	sessionID := resume.SessionID(st.LogFile)
+	finish(s.client, s.cfg, s.privKey, st.TaskID, code, sessionID)
 	taskstate.Remove(s.logDir, st.TaskID)
-	fmt.Printf("finished %s exit=%d\n", st.TaskID, code)
+	fmt.Printf("finished %s exit=%d session=%s\n", st.TaskID, code, sessionID)
 }
 
 // watchForCancel polls the server for a cancellation requested from the web UI
@@ -541,8 +565,8 @@ func reject(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey, 
 	}
 }
 
-func finish(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey, taskID string, code int) {
-	if err := client.FinishTask(taskID, cfg.APIToken, privKey, code); err != nil {
+func finish(client *api.Client, cfg *config.Config, privKey ed25519.PrivateKey, taskID string, code int, sessionID string) {
+	if err := client.FinishTask(taskID, cfg.APIToken, privKey, code, sessionID); err != nil {
 		fmt.Fprintln(os.Stderr, "finish error:", err)
 	}
 }

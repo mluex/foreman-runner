@@ -97,6 +97,21 @@ task whose state file is gone resumes its log numbering above the last sequence
 the server has, which means the output produced while the runner was down is not
 backfilled.
 
+#### Resuming an ended task
+
+When Claude Code exits it prints `Resume this session with: claude --resume
+<id>`. The runner reads that hint from the end of the task log and reports the
+id with the exit code, which is what makes the web UI offer a resume for the
+task. A resumed task arrives as an ordinary claim carrying that id: the runner
+verifies the original signed payload, starts `claude --resume <id>` in a new
+`foreman-task-<uuid>` session (same permission mode, model and Remote Control
+name, no prompt), and appends its output to the task's log.
+
+The runner only resumes a session that the task's own local log names, so the
+server cannot point a task at some other conversation on the machine. That also
+means a task can only be resumed on the runner it ran on, from the directory it
+ran in, and only while its log in `~/.local/state/foreman` still exists.
+
 ### `install`
 
 Installs the runner as a background service that starts on boot: a systemd user

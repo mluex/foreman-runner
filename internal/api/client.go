@@ -154,10 +154,15 @@ func (c *Client) Heartbeat(token string, privKey ed25519.PrivateKey, req Heartbe
 
 // NextTaskResponse is a claimed task: the exact signed payload bytes and the
 // detached signature to verify against the owner's public key.
+//
+// A resumed task carries the agent session to reopen and the last log sequence
+// the server stored, so the new session's output continues the task's log.
 type NextTaskResponse struct {
-	TaskID    string `json:"task_id"`
-	Payload   string `json:"payload"`
-	Signature string `json:"signature"`
+	TaskID          string `json:"task_id"`
+	Payload         string `json:"payload"`
+	Signature       string `json:"signature"`
+	ResumeSessionID string `json:"resume_session_id"`
+	LastLogSeq      int    `json:"last_log_seq"`
 }
 
 // TaskPayload is the parsed canonical task payload. Optional fields are empty
@@ -174,9 +179,10 @@ type TaskPayload struct {
 }
 
 // NextTask claims the next pending task for the runner, or returns (nil, nil)
-// when the queue is empty.
+// when the queue is empty. It tells the server this runner can resume a task,
+// which is what makes the server hand out resumed tasks at all.
 func (c *Client) NextTask(runnerID, token string) (*NextTaskResponse, error) {
-	httpReq, err := http.NewRequest(http.MethodGet, c.ServerURL+"/api/runners/"+runnerID+"/next-task", nil)
+	httpReq, err := http.NewRequest(http.MethodGet, c.ServerURL+"/api/runners/"+runnerID+"/next-task?resume=1", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -311,13 +317,19 @@ func (c *Client) RejectTask(taskID, token string, privKey ed25519.PrivateKey, re
 	})
 }
 
-// FinishTask reports the agent's exit code for a running task.
-func (c *Client) FinishTask(taskID, token string, privKey ed25519.PrivateKey, exitCode int) error {
-	return c.postSigned(c.ServerURL+"/api/tasks/"+taskID+"/finish", token, privKey, map[string]any{
+// FinishTask reports the agent's exit code for a running task, along with the
+// agent session it ran in when the runner found one (empty: none).
+func (c *Client) FinishTask(taskID, token string, privKey ed25519.PrivateKey, exitCode int, resumeSessionID string) error {
+	body := map[string]any{
 		"exit_code": exitCode,
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 		"nonce":     newNonce(),
-	})
+	}
+	if resumeSessionID != "" {
+		body["resume_session_id"] = resumeSessionID
+	}
+
+	return c.postSigned(c.ServerURL+"/api/tasks/"+taskID+"/finish", token, privKey, body)
 }
 
 // SendLog appends a captured log chunk for a task. Chunks are keyed by a
